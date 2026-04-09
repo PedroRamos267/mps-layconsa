@@ -1,0 +1,1267 @@
+import subprocess
+import sqlite3
+from datetime import date, timedelta
+import os
+
+import dash
+from dash.exceptions import PreventUpdate
+from dash import dcc, html, dash_table, Input, Output, State, callback_context
+import dash_bootstrap_components as dbc
+import pandas as pd
+
+from db import (init_db, cargar_plan_desde_excel, cargar_bom_stock,
+                get_ordenes_activas_en_dia, get_primera_fecha, get_mrp_dia,
+                get_mrp_proyectado, get_cumplimiento_semanal, get_cumplimiento_detalle,
+                get_semanas_plan)
+
+DB_PATH    = "mps_plasticos.db"
+EXCEL_PLAN = "plan_produccion.xlsx"
+
+
+def fmt_num(n):
+    if n is None: return "0"
+    try: return f"{int(n):,}"
+    except: return "0"
+
+
+def make_kpi(titulo, valor, subtitulo, color="light"):
+    return dbc.Card(
+        dbc.CardBody([
+            html.P(titulo, className="text-muted mb-1", style={"fontSize": "12px"}),
+            html.H4(valor, className=f"text-{color} mb-0", style={"fontWeight": "500"}),
+            html.Small(subtitulo, className="text-muted"),
+        ]),
+        className="h-100",
+        style={"borderRadius": "8px", "border": "0.5px solid #dee2e6"},
+    )
+
+
+def build_layout():
+    fecha_inicial = get_primera_fecha(DB_PATH)
+    try:
+        fecha_label = date.fromisoformat(fecha_inicial).strftime("%d/%m/%Y")
+    except Exception:
+        fecha_label = fecha_inicial
+
+    return dbc.Container([
+        dcc.Store(id="store-fecha", data=fecha_inicial),
+        dcc.Interval(id="auto-refresh", interval=60_000, n_intervals=0),
+
+        # Header
+        dbc.Row([
+            dbc.Col([
+                html.H5("MPS / MRP Plásticos – Layconsa", className="mb-0"),
+                html.Small("Plan del día vs. producción real", className="text-muted"),
+            ], width=6),
+            dbc.Col([
+                dcc.DatePickerSingle(
+                    id="date-picker",
+                    date=fecha_inicial,
+                    display_format="DD/MM/YYYY",
+                    first_day_of_week=1,
+                    style={"float":"right","marginRight":"8px"},
+                ),
+                dbc.Button("📥 Exportar Excel", id="btn-exportar", color="success",
+                           size="sm", outline=True, className="float-end me-2"),
+            ], width=6),
+        ], className="mb-3 pt-3 border-bottom pb-2"),
+
+        html.Div(id="export-feedback", className="mb-2"),
+
+        # Pestañas
+        dbc.Tabs([
+
+            # ── PESTAÑA MPS ──────────────────────────────────────────────────
+            dbc.Tab(label="📋 MPS – Plan de Producción", tab_id="tab-mps", children=[
+                html.Div(className="mt-3", children=[
+                    dbc.Row(id="kpi-row", className="mb-3 g-2"),
+                    dbc.Row(id="kpi-semanal", className="mb-2 g-2"),
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(id="fil-proceso", placeholder="Proceso",
+                                         multi=True, style={"fontSize": "13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dcc.Dropdown(id="fil-maquina", placeholder="Máquina",
+                                         multi=True, style={"fontSize": "13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dcc.Dropdown(id="fil-estado",
+                                options=[
+                                    {"label": "✅ Completado", "value": "ok"},
+                                    {"label": "🟡 Parcial",    "value": "warn"},
+                                    {"label": "🔴 Atrasado",   "value": "bad"},
+                                    {"label": "⬜ Pendiente",  "value": "pend"},
+                                ],
+                                placeholder="Estado", multi=True,
+                                style={"fontSize": "13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dbc.Button("＋ Registrar avance", id="btn-abrir-modal",
+                                       color="primary", size="sm", className="float-end"),
+                        ], width=3),
+                    ], className="mb-2 g-2"),
+                    html.Div(id="tabla-container"),
+                ]),
+            ]),
+
+            # ── PESTAÑA MRP ──────────────────────────────────────────────────
+            dbc.Tab(label="🔩 MRP – Requerimiento de Materiales", tab_id="tab-mrp", children=[
+                html.Div(className="mt-3", children=[
+                    dbc.Tabs([
+                        # Sub-pestaña: Resumen del día
+                        dbc.Tab(label="📊 Resumen del día", tab_id="mrp-dia", children=[
+                            html.Div(className="mt-3", children=[
+                                dbc.Row(id="mrp-kpi-row", className="mb-3 g-2"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dcc.Dropdown(id="mrp-fil-proceso", placeholder="Tipo de material",
+                                                     multi=True, style={"fontSize": "13px"}),
+                                    ], width=4),
+                                    dbc.Col([
+                                        dcc.Dropdown(id="mrp-fil-alerta",
+                                            options=[
+                                                {"label": "🔴 Falta stock", "value": "alerta"},
+                                                {"label": "✅ Cubierto",    "value": "ok"},
+                                            ],
+                                            placeholder="Filtrar por cobertura",
+                                            style={"fontSize": "13px"}),
+                                    ], width=4),
+                                    dbc.Col([
+                                        dbc.Button("📥 Exportar MRP Excel", id="btn-exportar-mrp",
+                                                   color="warning", size="sm", outline=True,
+                                                   className="float-end"),
+                                    ], width=4),
+                                ], className="mb-2 g-2"),
+                                html.Div(id="mrp-feedback", className="mb-2"),
+                                html.Div(id="mrp-tabla-container"),
+                            ]),
+                        ]),
+                        # Sub-pestaña: Proyección Comprados
+                        dbc.Tab(label="⚠️ Proyección – Comprados", tab_id="mrp-proy-comp", children=[
+                            html.Div(className="mt-3", children=[
+                                dbc.Row(id="proy-kpi-row", className="mb-3 g-2"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dcc.Dropdown(id="proy-fil-tipo",
+                                                     placeholder="Tipo de material",
+                                                     multi=True, style={"fontSize": "13px"}),
+                                    ], width=3),
+                                    dbc.Col([
+                                        dcc.Dropdown(id="proy-fil-semaforo",
+                                            options=[
+                                                {"label": "🔴 Quiebre < 7 días",   "value": "rojo"},
+                                                {"label": "🟡 Quiebre < 15 días",  "value": "amarillo"},
+                                                {"label": "✅ Cobertura > 30 días", "value": "verde"},
+                                            ],
+                                            placeholder="Filtrar por semáforo",
+                                            multi=True,
+                                            style={"fontSize": "13px"}),
+                                    ], width=4),
+                                    dbc.Col([
+                                        dbc.Button("📥 Exportar", id="btn-export-proy",
+                                                   color="warning", size="sm", outline=True,
+                                                   className="float-end me-2"),
+                                        dbc.Button("🔄 Recalcular", id="btn-recalc-proy",
+                                                   color="secondary", size="sm", outline=True,
+                                                   className="float-end me-2"),
+                                    ], width=5),
+                                ], className="mb-2 g-2"),
+                                html.Div(id="proy-feedback", className="mb-2"),
+                                html.Div(id="proy-tabla-container"),
+                            ]),
+                        ]),
+                        # Sub-pestaña: Proyección Semiterminados
+                        dbc.Tab(label="🔧 Proyección – Semiterminados", tab_id="mrp-proy-semi", children=[
+                            html.Div(className="mt-3", children=[
+                                dbc.Row(id="semi-kpi-row", className="mb-3 g-2"),
+                                dbc.Row([
+                                    dbc.Col([
+                                        dcc.Dropdown(id="semi-fil-tipo",
+                                                     placeholder="Tipo de material",
+                                                     multi=True, style={"fontSize": "13px"}),
+                                    ], width=3),
+                                    dbc.Col([
+                                        dcc.Dropdown(id="semi-fil-semaforo",
+                                            options=[
+                                                {"label": "🔴 Quiebre < 7 días",   "value": "rojo"},
+                                                {"label": "🟡 Quiebre < 15 días",  "value": "amarillo"},
+                                                {"label": "✅ Cobertura > 30 días", "value": "verde"},
+                                            ],
+                                            placeholder="Filtrar por semáforo",
+                                            multi=True,
+                                            style={"fontSize": "13px"}),
+                                    ], width=4),
+                                    dbc.Col([
+                                        dbc.Button("📥 Exportar", id="btn-export-semi",
+                                                   color="warning", size="sm", outline=True,
+                                                   className="float-end me-2"),
+                                        dbc.Button("🔄 Recalcular", id="btn-recalc-semi",
+                                                   color="secondary", size="sm", outline=True,
+                                                   className="float-end me-2"),
+                                    ], width=5),
+                                ], className="mb-2 g-2"),
+                                html.Div(id="semi-feedback", className="mb-2"),
+                                html.Div(id="semi-tabla-container"),
+                            ]),
+                        ]),
+                    ], id="mrp-subtabs", active_tab="mrp-dia"),
+                ]),
+            ]),
+
+            # ── PESTAÑA CUMPLIMIENTO ────────────────────────────────────────────
+            dbc.Tab(label="📈 Cumplimiento del programa", tab_id="tab-cum", children=[
+                html.Div(className="mt-3", children=[
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(id="cum-fil-semana", placeholder="Semana",
+                                         style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dcc.Dropdown(id="cum-fil-proceso", placeholder="Proceso",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dbc.Button("🔄 Actualizar", id="btn-cum-refresh",
+                                       color="secondary", size="sm", outline=True,
+                                       className="float-end"),
+                        ], width=6),
+                    ], className="mb-3 g-2"),
+                    dbc.Row(id="cum-kpi-row", className="mb-3 g-2"),
+                    dbc.Row([
+                        dbc.Col(html.Div(id="cum-panel-dias"),  width=7),
+                        dbc.Col(html.Div(id="cum-panel-proc"),  width=5),
+                    ], className="mb-3 g-2"),
+                    html.Div(id="cum-tabla"),
+                ]),
+            ]),
+
+        ], id="tabs", active_tab="tab-mps"),
+
+        # Modal registro avance
+        dbc.Modal([
+            dbc.ModalHeader(dbc.ModalTitle("Registrar avance real")),
+            dbc.ModalBody([
+                dbc.Label("Orden de producción", size="sm"),
+                dcc.Dropdown(id="m-op", style={"fontSize": "13px"}),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("Turno mañana", size="sm", className="mt-3"),
+                        dbc.Input(id="m-qty-man", type="number", min=0, placeholder="0"),
+                    ], width=6),
+                    dbc.Col([
+                        dbc.Label("Turno tarde", size="sm", className="mt-3"),
+                        dbc.Input(id="m-qty-tar", type="number", min=0, placeholder="0"),
+                    ], width=6),
+                ]),
+                dbc.Label("Total del día", size="sm", className="mt-3"),
+                dbc.Input(id="m-qty", type="number", min=0, placeholder="0",
+                          disabled=True, style={"fontWeight":"700","background":"#e9ecef"}),
+                dbc.Label("Operario (opcional)", size="sm", className="mt-3"),
+                dbc.Input(id="m-usuario", type="text", placeholder="Ej: Juan Pérez"),
+                html.Div(id="m-feedback", className="mt-2"),
+            ]),
+            dbc.ModalFooter([
+                dbc.Button("Cancelar", id="btn-cancelar", color="light", size="sm"),
+                dbc.Button("Guardar",  id="btn-guardar",  color="primary", size="sm"),
+            ]),
+        ], id="modal", is_open=False),
+
+    ], fluid=True, style={"maxWidth": "1500px", "fontFamily": "Arial, sans-serif"})
+
+
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+app.title = "MPS/MRP Plásticos – Layconsa"
+app.layout = build_layout
+
+
+# ── Callbacks MPS ─────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output("store-fecha", "data"),
+    Input("date-picker", "date"),
+    prevent_initial_call=False,
+)
+def cambiar_dia(fecha_str):
+    if not fecha_str:
+        return str(date.today())
+    return str(date.fromisoformat(str(fecha_str)[:10]))
+
+
+
+@app.callback(
+    Output("m-qty", "value"),
+    Input("m-qty-man", "value"),
+    Input("m-qty-tar", "value"),
+)
+def sumar_turnos(man, tar):
+    return (man or 0) + (tar or 0)
+
+@app.callback(
+    Output("kpi-row", "children"),
+    Output("tabla-container", "children"),
+    Output("fil-proceso", "options"),
+    Output("fil-maquina", "options"),
+    Output("m-op", "options"),
+    Input("store-fecha", "data"),
+    Input("fil-proceso", "value"),
+    Input("fil-maquina", "value"),
+    Input("fil-estado", "value"),
+    Input("auto-refresh", "n_intervals"),
+)
+def actualizar_mps(fecha_str, procesos, maquinas, estados, _):
+    fecha = date.fromisoformat(fecha_str)
+    fecha_label = fecha.strftime("%d/%m/%Y")
+    df = get_ordenes_activas_en_dia(DB_PATH, fecha)
+
+    if df.empty:
+        return (
+            [dbc.Col(make_kpi("Sin datos", "—", "No hay órdenes activas"), width=4)],
+            dbc.Alert([html.Strong(fecha_label), " — Sin órdenes. Usá ‹ › para navegar."],
+                      color="info", className="mt-2"),
+            [], [], [],
+        )
+
+    proc_opts = [{"label": p, "value": p} for p in sorted(df["Proceso"].unique())]
+    maq_opts  = [{"label": m, "value": m} for m in sorted(df["Maquina"].unique())]
+    op_opts   = [
+        {"label": f"{int(r.BELNR_ID)} – {r.Maquina} – {r.Descripcion[:30]}",
+         "value": r.BELNR_ID}
+        for _, r in df.iterrows()
+    ]
+
+    df["pct_dia"]  = (df["Real_Dia"] / df["Plan_Dia"] * 100).round(1).fillna(0).clip(upper=100)
+    df["pct_acum"] = (df["Acumulado_Real"] / df["Planificado"] * 100).round(1).fillna(0)
+
+    def clasif(p):
+        if p == 0:   return "pend"
+        if p >= 100: return "ok"
+        if p >= 75:  return "warn"
+        return "bad"
+
+    df["Estado"] = df["pct_dia"].apply(clasif)
+    df["Estado_label"] = df["Estado"].map({
+        "ok": "✅ Completado", "warn": "🟡 Parcial",
+        "bad": "🔴 Atrasado",  "pend": "⬜ Pendiente",
+    })
+    df["Inicio"] = df["Fecha_Inicio"].str[5:].str.replace("-","/") + " " + df["Hora_Inicio"]
+    df["Fin"]    = df["Fecha_Fin"].str[5:].str.replace("-","/")    + " " + df["Hora_Fin"]
+    df["Turnos"] = df["Horas_Prog"].apply(lambda h: "2 turnos" if h == 24 else "1 turno")
+
+    if procesos: df = df[df["Proceso"].isin(procesos)]
+    if maquinas: df = df[df["Maquina"].isin(maquinas)]
+    if estados:  df = df[df["Estado"].isin(estados)]
+
+    total = len(df)
+    ok    = (df["Estado"] == "ok").sum()
+    bad   = (df["Estado"] == "bad").sum()
+    plan_tot = df["Plan_Dia"].sum()
+    real_tot = df["Real_Dia"].sum()
+    gp = int(real_tot / plan_tot * 100) if plan_tot > 0 else 0
+
+    kpis = dbc.Row([
+        dbc.Col(make_kpi("Órdenes activas", str(total), fecha_label), width=3),
+        dbc.Col(make_kpi("Completadas", str(ok), f"de {total}", "success"), width=3),
+        dbc.Col(make_kpi("Atrasadas", str(bad), "requieren atención",
+                         "danger" if bad else "secondary"), width=3),
+        dbc.Col(make_kpi("Avance del día", f"{gp}%",
+                         f"{fmt_num(real_tot)} / {fmt_num(plan_tot)} und.",
+                         "success" if gp >= 90 else "warning" if gp >= 70 else "danger"), width=3),
+    ], className="g-2")
+
+    COLOR_MAP = {"ok":"#c6efce","warn":"#ffeb9c","bad":"#ffc7ce","pend":"#f8f9fa"}
+    tabla = dash_table.DataTable(
+        id="tabla-mps",
+        columns=[
+            {"name":"O. Prod.",    "id":"BELNR_ID"},
+            {"name":"Proceso",     "id":"Proceso"},
+            {"name":"Línea",       "id":"Linea"},
+            {"name":"Máquina",     "id":"Maquina"},
+            {"name":"Turnos",      "id":"Turnos"},
+            {"name":"Sec",         "id":"Sec"},
+            {"name":"Código",      "id":"ItemCode"},
+            {"name":"Descripción", "id":"Descripcion"},
+            {"name":"Inicio",      "id":"Inicio"},
+            {"name":"Fin",         "id":"Fin"},
+            {"name":"Dur.(hs)",    "id":"Duracion_Horas", "type":"numeric","format":{"specifier":".1f"}},
+            {"name":"Planificado", "id":"Planificado",    "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Plan día",    "id":"Plan_Dia",       "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Real día",    "id":"Real_Dia",       "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"% día",       "id":"pct_dia",        "type":"numeric","format":{"specifier":".1f"}},
+            {"name":"Acumulado",   "id":"Acumulado_Real", "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Pendiente",   "id":"Pendiente",      "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"% acum.",     "id":"pct_acum",       "type":"numeric","format":{"specifier":".1f"}},
+            {"name":"Estado",      "id":"Estado_label"},
+        ],
+        data=df.to_dict("records"),
+        page_size=50, sort_action="native", filter_action="native",
+        style_table={"overflowX":"auto"},
+        style_header={"backgroundColor":"#1f3864","color":"white",
+                      "fontWeight":"500","fontSize":"11px","border":"0.5px solid #dee2e6"},
+        style_cell={"fontSize":"11px","padding":"6px 8px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_data_conditional=[
+            {"if":{"filter_query": '{Estado} = "' + e + '"'},
+             "backgroundColor":c} for e,c in COLOR_MAP.items()
+        ],
+        style_cell_conditional=[
+            {"if":{"column_id":"Descripcion"},"textAlign":"left","minWidth":"180px"},
+            {"if":{"column_id":"Pendiente"},  "color":"#c0392b","fontWeight":"500"},
+            {"if":{"column_id":"Acumulado_Real"},"color":"#1a7a4a","fontWeight":"500"},
+        ],
+    )
+    return kpis, tabla, proc_opts, maq_opts, op_opts
+
+
+# ── Callbacks MRP ─────────────────────────────────────────────────────────────
+
+
+@app.callback(
+    Output("kpi-semanal", "children"),
+    Input("store-fecha", "data"),
+    Input("auto-refresh", "n_intervals"),
+)
+def actualizar_semanal(fecha_str, _):
+    try:
+        fecha = date.fromisoformat(fecha_str)
+        r = get_cumplimiento_semanal(DB_PATH, fecha)
+        if not r["detalle"]:
+            return []
+
+        pct = r["pct_semana"]
+        color = "success" if pct >= 90 else "warning" if pct >= 70 else "danger"
+
+        # KPI resumen semana
+        cards = [
+            dbc.Col(dbc.Card(dbc.CardBody([
+                html.P(f"Semana {r['semana']}", className="text-muted mb-1",
+                       style={"fontSize":"11px"}),
+                html.H5(f"{pct}%", className=f"text-{color} mb-0",
+                        style={"fontWeight":"500"}),
+                html.Small(f"{fmt_num(r['real_total'])} / {fmt_num(r['plan_total'])} und.",
+                           className="text-muted"),
+            ]), style={"borderRadius":"8px","border":"0.5px solid #dee2e6"}), width=2),
+        ]
+
+        # Mini barras por día
+        for d in r["detalle"]:
+            p = d["pct"]
+            bc = "#1a7a4a" if p >= 90 else "#856404" if p >= 70 else "#842029"
+            cards.append(dbc.Col(dbc.Card(dbc.CardBody([
+                html.P(d["fecha"], className="text-muted mb-1",
+                       style={"fontSize":"10px"}),
+                html.Div(style={"background":"#e9ecef","borderRadius":"3px",
+                                "height":"6px","marginBottom":"4px"},
+                         children=[html.Div(style={
+                             "width":f"{min(p,100)}%","height":"100%",
+                             "background":bc,"borderRadius":"3px"})]),
+                html.Small(f"{p:.0f}%", style={"fontSize":"11px","color":bc,
+                                                "fontWeight":"500"}),
+            ]), style={"borderRadius":"8px","border":"0.5px solid #dee2e6",
+                       "padding":"6px"}), width=2))
+
+        return cards
+    except Exception:
+        return []
+
+@app.callback(
+    Output("mrp-kpi-row", "children"),
+    Output("mrp-tabla-container", "children"),
+    Output("mrp-fil-proceso", "options"),
+    Input("store-fecha", "data"),
+    Input("mrp-fil-proceso", "value"),
+    Input("mrp-fil-alerta", "value"),
+    Input("auto-refresh", "n_intervals"),
+    Input("tabs", "active_tab"),
+)
+def actualizar_mrp(fecha_str, procesos, alerta_fil, _, tab):
+    # Solo recalcular cuando la pestaña MRP está activa
+    if tab and "mrp" not in str(tab):
+        raise PreventUpdate
+    fecha = date.fromisoformat(fecha_str)
+    fecha_label = fecha.strftime("%d/%m/%Y")
+
+    try:
+        df = get_mrp_dia(DB_PATH, fecha)
+    except Exception as e:
+        return (
+            [],
+            dbc.Alert(f"Error al calcular MRP: {str(e)}", color="danger"),
+            [],
+        )
+
+    if df.empty:
+        return (
+            [],
+            dbc.Alert(f"{fecha_label} — Sin plan activo o BOM no cargado. "
+                      "Verificá que el Excel tenga hojas BOM y Stock.",
+                      color="info"),
+            [],
+        )
+
+    proc_opts = [{"label": p, "value": p} for p in sorted(df["Tipo_Item"].unique())]
+
+    if procesos: df = df[df["Tipo_Item"].isin(procesos)]
+    if alerta_fil == "alerta": df = df[df["Alerta"] == True]
+    if alerta_fil == "ok":     df = df[df["Alerta"] == False]
+
+    total_comp  = len(df)
+    con_alerta  = df["Alerta"].sum()
+    req_bruto   = df["Req_Bruto"].sum()
+    req_neto    = df["Req_Neto"].sum()
+
+    kpis = dbc.Row([
+        dbc.Col(make_kpi("Componentes", str(total_comp), fecha_label), width=3),
+        dbc.Col(make_kpi("Con alerta", str(int(con_alerta)),
+                         "stock insuficiente", "danger" if con_alerta else "success"), width=3),
+        dbc.Col(make_kpi("Req. bruto total", fmt_num(req_bruto), "unidades necesarias"), width=3),
+        dbc.Col(make_kpi("Req. neto total", fmt_num(req_neto),
+                         "a comprar/producir",
+                         "danger" if req_neto > 0 else "success"), width=3),
+    ], className="g-2")
+
+    df["Alerta_label"] = df["Alerta"].apply(lambda x: "🔴 Falta stock" if x else "✅ Cubierto")
+
+    tabla = dash_table.DataTable(
+        id="tabla-mrp",
+        columns=[
+            {"name":"Tipo",          "id":"Tipo_Item"},
+            {"name":"Categoría",     "id":"Tipo_Material2"},
+            {"name":"Niv.","id":"Nivel"},
+            {"name":"Código",        "id":"Codigo_Comp"},
+            {"name":"Descripción",   "id":"Desc_Comp"},
+            {"name":"Req. bruto",    "id":"Req_Bruto",    "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"ALMA002",       "id":"Stock_ALMA002","type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"ALMA089",       "id":"Stock_ALMA089","type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Stock prod.",   "id":"Stock_Prod",   "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Stock total",   "id":"Stock_Total",  "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Req. neto",     "id":"Req_Neto",     "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Cobertura",     "id":"Alerta_label"},
+        ],
+        data=df.to_dict("records"),
+        page_size=50, sort_action="native", filter_action="native",
+        style_table={"overflowX":"auto"},
+        style_header={"backgroundColor":"#1f3864","color":"white",
+                      "fontWeight":"500","fontSize":"11px","border":"0.5px solid #dee2e6"},
+        style_cell={"fontSize":"11px","padding":"6px 8px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_data_conditional=[
+            {"if":{"filter_query":'{Alerta_label} = "🔴 Falta stock"'},
+             "backgroundColor":"#ffc7ce"},
+            {"if":{"filter_query":'{Alerta_label} = "✅ Cubierto"'},
+             "backgroundColor":"#c6efce"},
+        ],
+        style_cell_conditional=[
+            {"if":{"column_id":"Desc_Comp"},   "textAlign":"left","minWidth":"200px"},
+            {"if":{"column_id":"Tipo_Item"},   "textAlign":"left","minWidth":"160px"},
+            {"if":{"column_id":"Tipo_Material2"},"textAlign":"left"},
+            {"if":{"column_id":"Req_Neto"},    "fontWeight":"500","color":"#c0392b"},
+            {"if":{"column_id":"Stock_Total"}, "fontWeight":"500","color":"#1a7a4a"},
+        ],
+    )
+    return kpis, tabla, proc_opts
+
+
+
+
+@app.callback(
+    Output("proy-kpi-row", "children"),
+    Output("proy-tabla-container", "children"),
+    Output("proy-fil-tipo", "options"),
+    Input("btn-recalc-proy", "n_clicks"),
+    Input("proy-fil-tipo", "value"),
+    Input("proy-fil-semaforo", "value"),
+)
+def actualizar_proyeccion(_, tipos, semaforos):
+    try:
+        df = get_mrp_proyectado(DB_PATH)
+    except Exception as e:
+        return [], dbc.Alert(f"Error: {str(e)}", color="danger"), []
+
+    if df.empty:
+        return [], dbc.Alert("Sin datos. Verificá BOM y Stock en el Excel.", color="info"), []
+
+    # Solo comprados: excluir todos los 231xxx sin excepción
+    df = df[~df["Codigo_Comp"].str.startswith("231")].copy()
+
+    tipo_opts = [{"label": t, "value": t} for t in sorted(df["Tipo_Material2"].unique())]
+
+    if tipos:    df = df[df["Tipo_Material2"].isin(tipos)]
+    if semaforos: df = df[df["Semaforo"].isin(semaforos)]
+
+    total     = len(df)
+    n_rojo    = (df["Semaforo"] == "rojo").sum()
+    n_amarillo= (df["Semaforo"] == "amarillo").sum()
+    n_verde   = (df["Semaforo"] == "verde").sum()
+
+    kpis = dbc.Row([
+        dbc.Col(make_kpi("Componentes", str(total), "en el plan"), width=3),
+        dbc.Col(make_kpi("🔴 Quiebre ≤ 3 días", str(int(n_rojo)),
+                         "acción inmediata", "danger" if n_rojo else "secondary"), width=3),
+        dbc.Col(make_kpi("🟡 Quiebre ≤ 7 días", str(int(n_amarillo)),
+                         "planificar compra", "warning" if n_amarillo else "secondary"), width=3),
+        dbc.Col(make_kpi("✅ Sin riesgo", str(int(n_verde)),
+                         "cobertura > 7 días", "success"), width=3),
+    ], className="g-2")
+
+    # Columnas fijas + columnas de días
+    cols_fijas = [
+        {"name": "Semáforo",         "id": "Semaforo_icon"},
+        {"name": "Tipo Material",     "id": "Tipo_Material2"},
+        {"name": "Código",            "id": "Codigo_Comp"},
+        {"name": "Descripción",       "id": "Desc_Comp"},
+        {"name": "Stock inicial",     "id": "Stock_Inicial",       "type":"numeric","format":{"specifier":",.0f"}},
+        {"name": "Consumo total",     "id": "Consumo_Total",       "type":"numeric","format":{"specifier":",.0f"}},
+        {"name": "Cons./día prom.",   "id": "Consumo_Diario_Prom", "type":"numeric","format":{"specifier":",.1f"}},
+        {"name": "Días cobertura",    "id": "Dias_Cobertura"},
+        {"name": "Fecha quiebre",     "id": "Fecha_Quiebre"},
+    ]
+
+    # Detectar columnas de días (formato DD/MM)
+    import re
+    cols_dias = [c for c in df.columns if re.match(r"\d{2}/\d{2}", str(c))]
+    cols_tabla = cols_fijas + [
+        {"name": d, "id": d, "type":"numeric","format":{"specifier":",.0f"}}
+        for d in cols_dias
+    ]
+
+    df["Semaforo_icon"] = df["Semaforo"].map({
+        "rojo": "🔴", "amarillo": "🟡", "verde": "✅"})
+
+    COLOR_SEM = {"rojo": "#ffc7ce", "amarillo": "#ffeb9c", "verde": "#c6efce"}
+    # Umbrales: rojo < 7 días, amarillo < 15 días, verde >= 30 días
+    style_cond = [
+        {"if": {"filter_query": f'{{Semaforo}} = "{s}"'},
+         "backgroundColor": c}
+        for s, c in COLOR_SEM.items()
+    ]
+
+    tabla = dash_table.DataTable(
+        id="tabla-proy",
+        columns=cols_tabla,
+        data=df.to_dict("records"),
+        page_size=30,
+        sort_action="native",
+        filter_action="native",
+        fixed_columns={"headers": True, "data": 4},
+        style_table={"overflowX": "auto", "minWidth": "100%"},
+        style_header={"backgroundColor": "#1f3864", "color": "white",
+                      "fontWeight": "500", "fontSize": "11px",
+                      "border": "0.5px solid #dee2e6", "textAlign": "center"},
+        style_cell={"fontSize": "11px", "padding": "5px 7px",
+                    "border": "0.5px solid #dee2e6", "textAlign": "center",
+                    "minWidth": "70px"},
+        style_data_conditional=style_cond,
+        style_cell_conditional=[
+            {"if": {"column_id": "Desc_Comp"}, "textAlign": "left", "minWidth": "200px"},
+            {"if": {"column_id": "Fecha_Quiebre"},
+             "fontWeight": "500", "color": "#c0392b"},
+            {"if": {"column_id": "Dias_Cobertura"},
+             "fontWeight": "500"},
+        ],
+    )
+    return kpis, tabla, tipo_opts
+
+
+
+@app.callback(
+    Output("proy-feedback", "children"),
+    Input("btn-export-proy", "n_clicks"),
+    State("proy-fil-tipo", "value"),
+    State("proy-fil-semaforo", "value"),
+    prevent_initial_call=True,
+)
+def exportar_proyeccion(_, tipos, semaforos):
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        import re as re_mod
+
+        df = get_mrp_proyectado(DB_PATH)
+        if df.empty:
+            return dbc.Alert("Sin datos para exportar.", color="warning", dismissable=True)
+
+        if tipos:    df = df[df["Tipo_Material2"].isin(tipos)]
+        if semaforos: df = df[df["Semaforo"].isin(semaforos)]
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Proyección Quiebre Stock"
+
+        s = Side(style="thin", color="BFBFBF")
+        brd = Border(left=s, right=s, top=s, bottom=s)
+        C_TITULO = "2F5496"
+        C_AZUL   = "1F3864"
+        COLOR_SEM = {"rojo":"FFC7CE","amarillo":"FFEB9C","verde":"C6EFCE"}
+
+        # Título
+        cols_dias = [c for c in df.columns if re_mod.match(r"\d{2}/\d{2}", str(c))]
+        total_cols = 9 + len(cols_dias)
+        ws.merge_cells(f"A1:{get_column_letter(total_cols)}1")
+        ws["A1"] = f"Proyección de Quiebre de Stock – Plan completo"
+        ws["A1"].font = Font(bold=True, color="FFFFFF", size=12)
+        ws["A1"].fill = PatternFill("solid", fgColor=C_TITULO)
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[1].height = 22
+
+        # Encabezados fijos
+        enc_fijos = ["Semáforo","Tipo Material","Código","Descripción",
+                     "Stock inicial","Consumo total","Cons./día","Días cob.","Fecha quiebre"]
+        id_fijos  = ["Semaforo","Tipo_Material2","Codigo_Comp","Desc_Comp",
+                     "Stock_Inicial","Consumo_Total","Consumo_Diario_Prom","Dias_Cobertura","Fecha_Quiebre"]
+        anchos_f  = [10,18,14,40,13,13,11,10,14]
+
+        for c_idx, (enc, ancho) in enumerate(zip(enc_fijos, anchos_f), 1):
+            cell = ws.cell(2, c_idx, enc)
+            cell.font = Font(bold=True, color="FFFFFF", size=9)
+            cell.fill = PatternFill("solid", fgColor=C_AZUL)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = brd
+            ws.column_dimensions[get_column_letter(c_idx)].width = ancho
+        for d_idx, dia in enumerate(cols_dias, len(enc_fijos)+1):
+            cell = ws.cell(2, d_idx, dia)
+            cell.font = Font(bold=True, color="FFFFFF", size=8)
+            cell.fill = PatternFill("solid", fgColor=C_AZUL)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = brd
+            ws.column_dimensions[get_column_letter(d_idx)].width = 9
+        ws.row_dimensions[2].height = 28
+
+        # Filas
+        for fi, (_, row) in enumerate(df.iterrows(), 3):
+            sem = row["Semaforo"]
+            bg = COLOR_SEM.get(sem, "FFFFFF")
+            sem_icon = {"rojo":"🔴","amarillo":"🟡","verde":"✅"}.get(sem,"")
+            vals_fijos = [sem_icon, row["Tipo_Material2"], row["Codigo_Comp"], row["Desc_Comp"],
+                          int(row["Stock_Inicial"]), int(row["Consumo_Total"]),
+                          round(float(row["Consumo_Diario_Prom"]),1),
+                          row["Dias_Cobertura"], row["Fecha_Quiebre"]]
+            for c_idx, val in enumerate(vals_fijos, 1):
+                cell = ws.cell(fi, c_idx, val)
+                cell.fill = PatternFill("solid", fgColor=bg)
+                cell.border = brd
+                cell.font = Font(size=9)
+                cell.alignment = Alignment(
+                    horizontal="left" if c_idx == 4 else "center", vertical="center")
+                if c_idx in (5,6):
+                    cell.number_format = "#,##0"
+            for d_idx, dia in enumerate(cols_dias, len(enc_fijos)+1):
+                val = row.get(dia, 0)
+                cell = ws.cell(fi, d_idx, int(val) if val else 0)
+                cell.fill = PatternFill("solid", fgColor=bg)
+                cell.border = brd
+                cell.font = Font(size=8)
+                cell.alignment = Alignment(horizontal="center")
+                cell.number_format = "#,##0"
+            ws.row_dimensions[fi].height = 15
+
+        ws.freeze_panes = f"{get_column_letter(len(enc_fijos)+1)}3"
+        ws.auto_filter.ref = f"A2:{get_column_letter(total_cols)}{len(df)+2}"
+
+        salida = "Proyeccion_Quiebre_Stock.xlsx"
+        wb.save(salida)
+        return dbc.Alert(f"✅ Exportado: {salida}", color="success",
+                         dismissable=True, duration=5000)
+    except Exception as e:
+        return dbc.Alert(f"❌ {str(e)}", color="danger", dismissable=True)
+
+@app.callback(
+    Output("mrp-feedback", "children"),
+    Input("btn-exportar-mrp", "n_clicks"),
+    State("store-fecha", "data"),
+    prevent_initial_call=True,
+)
+def exportar_mrp(_, fecha_str):
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        fecha = date.fromisoformat(fecha_str)
+        df = get_mrp_dia(DB_PATH, fecha)
+        if df.empty:
+            return dbc.Alert("Sin datos para exportar.", color="warning", dismissable=True)
+
+        df["Alerta_label"] = df["Alerta"].apply(
+            lambda x: "Falta stock" if x else "Cubierto")
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"MRP {fecha.strftime('%d-%m-%Y')}"
+
+        s = Side(style="thin", color="BFBFBF")
+        brd = Border(left=s, right=s, top=s, bottom=s)
+
+        # Título
+        ws.merge_cells("A1:J1")
+        ws["A1"] = f"MRP Diario – {fecha.strftime('%d/%m/%Y')}"
+        ws["A1"].font = Font(bold=True, color="FFFFFF", size=12)
+        ws["A1"].fill = PatternFill("solid", fgColor="2F5496")
+        ws["A1"].alignment = Alignment(horizontal="center")
+        ws.row_dimensions[1].height = 22
+
+        cols = ["Proceso","Código comp.","Descripción","Req. bruto",
+                "ALMA002","ALMA089","Stock prod.","Stock total","Req. neto","Cobertura"]
+        ids  = ["Proceso","Codigo_Comp","Desc_Comp","Req_Bruto",
+                "Stock_ALMA002","Stock_ALMA089","Stock_Prod","Stock_Total","Req_Neto","Alerta_label"]
+        anchos = [14,16,42,13,12,12,12,12,12,14]
+
+        for c_idx, (col, ancho) in enumerate(zip(cols, anchos), 1):
+            cell = ws.cell(2, c_idx, col)
+            cell.font = Font(bold=True, color="FFFFFF", size=9)
+            cell.fill = PatternFill("solid", fgColor="1F3864")
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.border = brd
+            ws.column_dimensions[get_column_letter(c_idx)].width = ancho
+        ws.row_dimensions[2].height = 28
+
+        for fi, (_, row) in enumerate(df.iterrows(), 3):
+            es_alerta = row["Alerta"]
+            bg = "FFC7CE" if es_alerta else "C6EFCE"
+            for c_idx, col_id in enumerate(ids, 1):
+                val = row[col_id]
+                if col_id in ("Req_Bruto","Stock_ALMA002","Stock_ALMA089",
+                              "Stock_Prod","Stock_Total","Req_Neto"):
+                    val = int(val) if not pd.isna(val) else 0
+                cell = ws.cell(fi, c_idx, val)
+                cell.fill = PatternFill("solid", fgColor=bg)
+                cell.border = brd
+                cell.font = Font(size=9)
+                cell.alignment = Alignment(
+                    horizontal="left" if c_idx == 3 else "center")
+                if c_idx in (4,5,6,7,8,9):
+                    cell.number_format = "#,##0"
+
+        ws.freeze_panes = "A3"
+        ws.auto_filter.ref = f"A2:J{len(df)+2}"
+
+        salida = f"MRP_{fecha.strftime('%Y%m%d')}.xlsx"
+        wb.save(salida)
+        return dbc.Alert(f"✅ Exportado: {salida}", color="success",
+                         dismissable=True, duration=5000)
+    except Exception as e:
+        return dbc.Alert(f"❌ {str(e)}", color="danger", dismissable=True)
+
+
+@app.callback(
+    Output("export-feedback", "children"),
+    Input("btn-exportar", "n_clicks"),
+    prevent_initial_call=True,
+)
+def exportar_mps(_):
+    try:
+        result = subprocess.run(
+            ["python3", "exportar_excel.py"],
+            capture_output=True, text=True, timeout=60,
+            cwd=os.path.dirname(os.path.abspath(__file__))
+        )
+        if result.returncode == 0:
+            return dbc.Alert("✅ MPS_Reporte.xlsx exportado",
+                             color="success", dismissable=True, duration=5000)
+        return dbc.Alert(f"❌ {result.stderr[:300]}", color="danger", dismissable=True)
+    except Exception as e:
+        return dbc.Alert(f"❌ {str(e)}", color="danger", dismissable=True)
+
+
+@app.callback(
+    Output("modal", "is_open"),
+    Output("m-feedback", "children"),
+    Input("btn-abrir-modal", "n_clicks"),
+    Input("btn-cancelar",    "n_clicks"),
+    Input("btn-guardar",     "n_clicks"),
+    State("modal", "is_open"),
+    State("m-op",  "value"),
+    State("m-qty", "value"),
+    State("m-usuario", "value"),
+    State("store-fecha", "data"),
+    prevent_initial_call=True,
+)
+def manejar_modal(abrir, cancelar, guardar, is_open, op_id, qty, usuario, fecha_str):
+    ctx = callback_context.triggered[0]["prop_id"]
+    if "abrir"    in ctx: return True, ""
+    if "cancelar" in ctx: return False, ""
+    if "guardar"  in ctx:
+        if not op_id or qty is None:
+            return True, dbc.Alert("Completá la orden y la cantidad.",
+                                   color="warning", className="py-1 px-2")
+        fecha = date.fromisoformat(fecha_str)
+        con = sqlite3.connect(DB_PATH)
+        con.execute("""
+            INSERT INTO avance_real (BELNR_ID, ItemCode, Descripcion, Fecha, Cantidad_Real)
+            SELECT BELNR_ID, ItemCode, Descripcion, ?, ?
+            FROM ordenes_plan WHERE BELNR_ID = ?
+            ON CONFLICT(BELNR_ID, Fecha)
+            DO UPDATE SET Cantidad_Real = excluded.Cantidad_Real
+        """, (str(fecha), float(qty), int(op_id)))
+        con.commit()
+        con.close()
+        return False, ""
+    return is_open, ""
+
+
+
+@app.callback(
+    Output("cum-kpi-row",    "children"),
+    Output("cum-panel-dias", "children"),
+    Output("cum-panel-proc", "children"),
+    Output("cum-tabla",      "children"),
+    Output("cum-fil-proceso","options"),
+    Input("btn-cum-refresh", "n_clicks"),
+    Input("cum-fil-semana",  "value"),
+    Input("cum-fil-proceso", "value"),
+)
+def actualizar_cumplimiento(_, semana_str, procesos_fil):
+    if not semana_str:
+        semana_str = str(date.today() - timedelta(days=date.today().weekday()))
+    fecha = date.fromisoformat(semana_str)
+    try:
+        r = get_cumplimiento_detalle(DB_PATH, fecha)
+    except Exception as e:
+        err = dbc.Alert(f"Error: {str(e)}", color="danger")
+        return [], err, err, err
+
+    # Opciones de proceso
+    proc_opts = [{"label": p["proceso"], "value": p["proceso"]}
+                 for p in r["detalle_proceso"]]
+
+    if not r["detalle_dia"]:
+        msg = dbc.Alert("Sin datos para esta semana.", color="info")
+        return [], msg, msg, msg, proc_opts
+
+    # Filtrar órdenes por proceso si hay filtro activo
+    ordenes_fil = r["detalle_ordenes"]
+    if procesos_fil:
+        ordenes_fil = [o for o in ordenes_fil if o["Proceso"] in procesos_fil]
+
+    pct = r["pct_semana"]
+    col = "success" if pct >= 90 else "warning" if pct >= 70 else "danger"
+
+    # KPIs
+    kpis = dbc.Row([
+        dbc.Col(make_kpi(f"Semana {r['semana']}", f"{pct}%",
+                         "cumplimiento", col), width=3),
+        dbc.Col(make_kpi("Plan semanal", fmt_num(r["plan_total"]),
+                         "unidades"), width=3),
+        dbc.Col(make_kpi("Real producido", fmt_num(r["real_total"]),
+                         "unidades"), width=3),
+        dbc.Col(make_kpi("Órdenes completas",
+                         f"{r['ordenes_ok']} / {r['ordenes_total']}",
+                         "completadas",
+                         "success" if r["ordenes_ok"]==r["ordenes_total"] else "warning"),
+                width=3),
+    ], className="g-2")
+
+    # Panel días
+    def color_bar(p):
+        if p >= 90: return "#1a7a4a"
+        if p >= 70: return "#854F0B"
+        return "#A32D2D"
+
+    # Cumplimiento diario — recalcular por día si hay filtro de proceso
+    barras_dia = []
+    for d in r["detalle_dia"]:
+        if procesos_fil:
+            # Recalcular plan/real del día solo para las órdenes del proceso filtrado
+            from db import get_ordenes_activas_en_dia as _get_dia
+            try:
+                fecha_d = date.fromisoformat(d["fecha"].split(" ")[-1].replace("/","") if "/" in d["fecha"] else str(fecha))
+                # Parse fecha desde string "Lun 06/04"
+                partes = d["fecha"].split(" ")
+                if len(partes) == 2:
+                    dm = partes[1].split("/")
+                    fecha_d = date(fecha.year, int(dm[1]), int(dm[0]))
+                df_d = _get_dia(DB_PATH, fecha_d)
+                if not df_d.empty and procesos_fil:
+                    df_d_fil = df_d[df_d["Proceso"].isin(procesos_fil)]
+                    plan_d = df_d_fil["Plan_Dia"].sum()
+                    real_d = df_d_fil["Real_Dia"].sum()
+                    p = round(real_d / plan_d * 100, 1) if plan_d > 0 else 0
+                else:
+                    p = d["pct"]
+            except Exception:
+                p = d["pct"]
+        else:
+            p = d["pct"]
+        bc = color_bar(p)
+        barras_dia.append(
+            html.Div(style={"display":"flex","alignItems":"center","gap":"8px",
+                            "marginBottom":"10px"}, children=[
+                html.Span(d["fecha"], style={"fontSize":"11px","width":"72px",
+                           "textAlign":"right","color":"var(--color-text-secondary)","flexShrink":"0"}),
+                html.Div(style={"flex":"1","height":"12px","background":"#e9ecef",
+                                "borderRadius":"4px","overflow":"hidden"}, children=[
+                    html.Div(style={"width":f"{min(p,100)}%","height":"100%",
+                                    "background":bc,"borderRadius":"4px"})
+                ]),
+                html.Span(f"{p:.0f}%", style={"fontSize":"12px","fontWeight":"700",
+                           "minWidth":"38px","textAlign":"right","color":bc}),
+            ])
+        )
+
+    panel_dias = dbc.Card(dbc.CardBody([
+        html.P("Cumplimiento diario", style={"fontSize":"12px","fontWeight":"500",
+               "color":"var(--color-text-secondary)","marginBottom":"12px"}),
+        *barras_dia,
+    ]), style={"borderRadius":"10px","border":"0.5px solid var(--color-border-tertiary)",
+               "background":"var(--color-background-secondary)"})
+
+    # Panel proceso
+    barras_proc = []
+    for p_item in r["detalle_proceso"]:
+        p = p_item["pct"]
+        bc = color_bar(p)
+        barras_proc.append(
+            html.Div(style={"display":"flex","alignItems":"center","gap":"8px",
+                            "marginBottom":"8px"}, children=[
+                html.Span(p_item["proceso"][:14], style={"fontSize":"11px","width":"90px",
+                           "textAlign":"right","color":"var(--color-text-secondary)","flexShrink":"0"}),
+                html.Div(style={"flex":"1","height":"10px","background":"var(--color-border-tertiary)",
+                                "borderRadius":"4px","overflow":"hidden"}, children=[
+                    html.Div(style={"width":f"{min(p,100)}%","height":"100%",
+                                    "background":bc,"borderRadius":"4px"})
+                ]),
+                html.Span(f"{p:.0f}%", style={"fontSize":"11px","fontWeight":"500",
+                           "minWidth":"34px","textAlign":"right","color":bc}),
+            ])
+        )
+
+    panel_proc = dbc.Card(dbc.CardBody([
+        html.P("Por proceso", style={"fontSize":"12px","fontWeight":"500",
+               "color":"var(--color-text-secondary)","marginBottom":"12px"}),
+        *barras_proc,
+    ]), style={"borderRadius":"10px","border":"0.5px solid var(--color-border-tertiary)"})
+
+    # Tabla detalle órdenes
+    ESTADO_COLOR = {
+        "Completo":  "#c6efce", "Parcial": "#ffeb9c",
+        "Atrasado":  "#ffc7ce", "Pendiente": "#f8f9fa",
+    }
+    ESTADO_TXT = {
+        "Completo":  "#1a7a4a", "Parcial": "#854F0B",
+        "Atrasado":  "#A32D2D", "Pendiente": "#888780",
+    }
+
+    tabla = dash_table.DataTable(
+        id="tabla-cum",
+        columns=[
+            {"name":"O. Prod.",    "id":"BELNR_ID"},
+            {"name":"Máquina",     "id":"Maquina"},
+            {"name":"Proceso",     "id":"Proceso"},
+            {"name":"Descripción", "id":"Descripcion"},
+            {"name":"Planificado", "id":"Planificado",  "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Plan sem.",   "id":"plan_sem",     "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Real sem.",   "id":"real_sem",     "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"% Cum.",      "id":"pct",          "type":"numeric","format":{"specifier":".1f"}},
+            {"name":"Estado",      "id":"estado"},
+        ],
+        data=ordenes_fil,
+        page_size=40,
+        sort_action="native",
+        filter_action="native",
+        style_table={"overflowX":"auto"},
+        style_header={"backgroundColor":"#1f3864","color":"white",
+                      "fontWeight":"500","fontSize":"11px",
+                      "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_cell={"fontSize":"11px","padding":"6px 10px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_data_conditional=[
+            {"if":{"filter_query": '{estado} = "' + est + '"'},
+             "backgroundColor": ESTADO_COLOR[est],
+             "color": ESTADO_TXT[est]}
+            for est in ESTADO_COLOR
+        ],
+        style_cell_conditional=[
+            {"if":{"column_id":"Descripcion"},"textAlign":"left","minWidth":"180px"},
+            {"if":{"column_id":"pct"},        "fontWeight":"700","fontSize":"12px"},
+            {"if":{"column_id":"plan_sem"},   "fontWeight":"700","color":"#0C447C",
+             "background":"#E6F1FB"},
+            {"if":{"column_id":"real_sem"},   "fontWeight":"700","color":"#1a7a4a",
+             "background":"#EAF3DE"},
+        ],
+    )
+
+    return kpis, panel_dias, panel_proc, tabla, proc_opts
+
+
+# ── Callback: Semiterminados proyección ───────────────────────────────────────
+
+@app.callback(
+    Output("semi-kpi-row",       "children"),
+    Output("semi-tabla-container","children"),
+    Output("semi-fil-tipo",      "options"),
+    Input("btn-recalc-semi",     "n_clicks"),
+    Input("semi-fil-tipo",       "value"),
+    Input("semi-fil-semaforo",   "value"),
+)
+def actualizar_proyeccion_semi(_, tipos, semaforos):
+    try:
+        df = get_mrp_proyectado(DB_PATH)
+    except Exception as e:
+        return [], dbc.Alert(f"Error: {str(e)}", color="danger"), []
+
+    if df.empty:
+        return [], dbc.Alert("Sin datos.", color="info"), []
+
+    # Solo semiterminados (231xxx)
+    df = df[df["Codigo_Comp"].str.startswith("231")].copy()
+
+    tipo_opts = [{"label": t, "value": t} for t in sorted(df["Tipo_Material2"].unique())]
+    if tipos:    df = df[df["Tipo_Material2"].isin(tipos)]
+    if semaforos: df = df[df["Semaforo"].isin(semaforos)]
+
+    total      = len(df)
+    n_rojo     = (df["Semaforo"] == "rojo").sum()
+    n_amarillo = (df["Semaforo"] == "amarillo").sum()
+    n_verde    = (df["Semaforo"] == "verde").sum()
+
+    kpis = dbc.Row([
+        dbc.Col(make_kpi("Semiterminados", str(total), "en el plan"), width=3),
+        dbc.Col(make_kpi("🔴 Quiebre < 7 días",  str(int(n_rojo)),
+                         "producir urgente", "danger" if n_rojo else "secondary"), width=3),
+        dbc.Col(make_kpi("🟡 Quiebre < 15 días", str(int(n_amarillo)),
+                         "planificar", "warning" if n_amarillo else "secondary"), width=3),
+        dbc.Col(make_kpi("✅ Sin riesgo", str(int(n_verde)), "cobertura ok", "success"), width=3),
+    ], className="g-2")
+
+    import re
+    cols_dias = [c for c in df.columns if re.match(r"\d{2}/\d{2}", str(c))]
+    df["Semaforo_icon"] = df["Semaforo"].map({"rojo":"🔴","amarillo":"🟡","verde":"✅"})
+    COLOR_SEM = {"rojo":"#ffc7ce","amarillo":"#ffeb9c","verde":"#c6efce"}
+
+    cols_tabla = [
+        {"name":"Semáforo",      "id":"Semaforo_icon"},
+        {"name":"Tipo",          "id":"Tipo_Material2"},
+        {"name":"Código",        "id":"Codigo_Comp"},
+        {"name":"Descripción",   "id":"Desc_Comp"},
+        {"name":"Stock inicial", "id":"Stock_Inicial",       "type":"numeric","format":{"specifier":",.0f"}},
+        {"name":"Consumo total", "id":"Consumo_Total",       "type":"numeric","format":{"specifier":",.0f"}},
+        {"name":"Cons./día",     "id":"Consumo_Diario_Prom", "type":"numeric","format":{"specifier":",.1f"}},
+        {"name":"Días cob.",     "id":"Dias_Cobertura"},
+        {"name":"Fecha quiebre", "id":"Fecha_Quiebre"},
+    ] + [{"name": d, "id": d, "type":"numeric","format":{"specifier":",.0f"}} for d in cols_dias]
+
+    tabla = dash_table.DataTable(
+        id="tabla-semi",
+        columns=cols_tabla,
+        data=df.to_dict("records"),
+        page_size=30, sort_action="native", filter_action="native",
+        fixed_columns={"headers": True, "data": 4},
+        style_table={"overflowX":"auto","minWidth":"100%"},
+        style_header={"backgroundColor":"#1f3864","color":"white",
+                      "fontWeight":"500","fontSize":"11px","border":"0.5px solid #dee2e6"},
+        style_cell={"fontSize":"11px","padding":"5px 7px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center","minWidth":"70px"},
+        style_data_conditional=[
+            {"if":{"filter_query":f'{{Semaforo}} = "{s}"'},"backgroundColor":c}
+            for s,c in COLOR_SEM.items()
+        ],
+        style_cell_conditional=[
+            {"if":{"column_id":"Desc_Comp"},"textAlign":"left","minWidth":"200px"},
+            {"if":{"column_id":"Fecha_Quiebre"},"fontWeight":"500","color":"#c0392b"},
+        ],
+    )
+    return kpis, tabla, tipo_opts
+
+
+@app.callback(
+    Output("semi-feedback", "children"),
+    Input("btn-export-semi", "n_clicks"),
+    prevent_initial_call=True,
+)
+def exportar_semi(_):
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        import re as re_mod
+
+        df = get_mrp_proyectado(DB_PATH)
+        df = df[df["Codigo_Comp"].str.startswith("231")].copy()
+        if df.empty:
+            return dbc.Alert("Sin datos.", color="warning", dismissable=True)
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Proyección Semiterminados"
+        s = Side(style="thin", color="BFBFBF")
+        brd = Border(left=s, right=s, top=s, bottom=s)
+        COLOR_SEM = {"rojo":"FFC7CE","amarillo":"FFEB9C","verde":"C6EFCE"}
+
+        cols_dias = [c for c in df.columns if re_mod.match(r"\d{2}/\d{2}", str(c))]
+        enc = ["Semáforo","Tipo","Código","Descripción","Stock ini.","Consumo total",
+               "Cons./día","Días cob.","Fecha quiebre"] + cols_dias
+        ids = ["Semaforo","Tipo_Material2","Codigo_Comp","Desc_Comp","Stock_Inicial",
+               "Consumo_Total","Consumo_Diario_Prom","Dias_Cobertura","Fecha_Quiebre"] + cols_dias
+
+        ws.merge_cells(f"A1:{get_column_letter(len(enc))}1")
+        ws["A1"] = "Proyección de Semiterminados – Quiebre de Stock"
+        ws["A1"].font = Font(bold=True, color="FFFFFF", size=12)
+        ws["A1"].fill = PatternFill("solid", fgColor="2F5496")
+        ws["A1"].alignment = Alignment(horizontal="center")
+        ws.row_dimensions[1].height = 22
+
+        for ci, e in enumerate(enc, 1):
+            cell = ws.cell(2, ci, e)
+            cell.font = Font(bold=True, color="FFFFFF", size=9)
+            cell.fill = PatternFill("solid", fgColor="1F3864")
+            cell.alignment = Alignment(horizontal="center", wrap_text=True)
+            cell.border = brd
+            ws.column_dimensions[get_column_letter(ci)].width = 10 if e in cols_dias else 14
+        ws.row_dimensions[2].height = 28
+
+        for fi, (_, row) in enumerate(df.iterrows(), 3):
+            sem = row["Semaforo"]
+            bg = COLOR_SEM.get(sem, "FFFFFF")
+            icon = {"rojo":"🔴","amarillo":"🟡","verde":"✅"}.get(sem,"")
+            vals = [icon, row["Tipo_Material2"], row["Codigo_Comp"], row["Desc_Comp"],
+                    int(row["Stock_Inicial"]), int(row["Consumo_Total"]),
+                    round(float(row["Consumo_Diario_Prom"]),1),
+                    row["Dias_Cobertura"], row["Fecha_Quiebre"]]
+            vals += [int(row.get(d,0)) for d in cols_dias]
+            for ci, val in enumerate(vals, 1):
+                cell = ws.cell(fi, ci, val)
+                cell.fill = PatternFill("solid", fgColor=bg)
+                cell.border = brd
+                cell.font = Font(size=9)
+                cell.alignment = Alignment(
+                    horizontal="left" if ci == 4 else "center")
+            ws.row_dimensions[fi].height = 15
+
+        ws.freeze_panes = "J3"
+        ws.auto_filter.ref = f"A2:{get_column_letter(len(enc))}{len(df)+2}"
+        wb.save("Proyeccion_Semiterminados.xlsx")
+        return dbc.Alert("✅ Exportado: Proyeccion_Semiterminados.xlsx",
+                         color="success", dismissable=True, duration=5000)
+    except Exception as e:
+        return dbc.Alert(f"❌ {str(e)}", color="danger", dismissable=True)
+
+
+# ── Callback: Cumplimiento con filtros de semana y proceso ────────────────────
+
+@app.callback(
+    Output("cum-fil-semana", "options"),
+    Output("cum-fil-semana", "value"),
+    Input("tabs", "active_tab"),
+)
+def cargar_semanas(tab):
+    semanas = get_semanas_plan(DB_PATH)
+    # Seleccionar semana actual por defecto
+    hoy = date.today()
+    lunes_hoy = str(hoy - timedelta(days=hoy.weekday()))
+    val_default = lunes_hoy if any(s["value"] == lunes_hoy for s in semanas) else (semanas[0]["value"] if semanas else None)
+    return semanas, val_default
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+server = app.server  # para Render/gunicorn
+
+if __name__ == "__main__":
+    init_db(DB_PATH)
+    if os.path.exists(EXCEL_PLAN):
+        cargar_plan_desde_excel(DB_PATH, EXCEL_PLAN)
+        cargar_bom_stock(DB_PATH, EXCEL_PLAN)
+        print(f"✅ Plan, BOM y Stock cargados desde {EXCEL_PLAN}")
+    else:
+        print(f"⚠️  No se encontró {EXCEL_PLAN}")
+    app.run(debug=True, port=8050)
