@@ -111,23 +111,31 @@ def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
 # ── Hoja Gantt ────────────────────────────────────────────────────────────────
 
 def escribir_hoja_gantt(ws, df: pd.DataFrame, df_ingresos: pd.DataFrame,
-                        proceso: str, desde: date, hasta: date):
-    dias = dias_habiles_rango(desde, hasta)
+                        proceso: str, desde: date, hasta: date, linea: str = None):
+    from db import es_habil
+    dias = [d for d in (desde + timedelta(days=i)
+                        for i in range((hasta - desde).days + 1))
+            if es_habil(d)]
     if not dias:
         ws["A1"] = "Sin días hábiles en el rango."
         return
 
-    ingr = {}
+    # Filtrar por línea si se especifica
+    if linea:
+        df = df[df["Linea"] == linea].reset_index(drop=True)
+
+    # Índice ingresos por (belnr, fecha): cantidad acumulada real
+    ingr_dia = {}
     if not df_ingresos.empty and "Cantidad_Real" in df_ingresos.columns:
         for _, r in df_ingresos.iterrows():
-            ingr[(int(r["BELNR_ID"]), str(r["Fecha"])[:10])] = float(r["Cantidad_Real"])
+            ingr_dia[(int(r["BELNR_ID"]), str(r["Fecha"])[:10])] = float(r["Cantidad_Real"])
 
-    COLS_FIJAS = 7  # OP / Máquina / Línea / Turnos / Sec / Código / Descripción / Planificado
-    total_cols = COLS_FIJAS + 1 + len(dias)
+    COLS_FIJAS = 8  # OP/Máquina/Línea/Turnos/Sec/Código/Descripción/Planificado
+    total_cols = COLS_FIJAS + len(dias)
 
     # Título
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
-    c = ws.cell(1, 1, f"Gantt Plan vs Real – {proceso}")
+    c = ws.cell(1, 1, f"Gantt Plan vs Real – {proceso} ({desde.strftime('%d/%m')} al {hasta.strftime('%d/%m/%Y')})")
     c.font = Font(bold=True, color="FFFFFF", size=12)
     c.fill = fill(C_TITULO)
     c.alignment = Alignment(horizontal="center", vertical="center")
@@ -142,7 +150,7 @@ def escribir_hoja_gantt(ws, df: pd.DataFrame, df_ingresos: pd.DataFrame,
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border    = border_thin()
         ws.column_dimensions[get_column_letter(c_idx)].width = ancho
-    ws.row_dimensions[2].height = 32
+    ws.row_dimensions[2].height = 36
 
     for d_idx, dia in enumerate(dias, COLS_FIJAS + 1):
         cell = ws.cell(2, d_idx, dia.strftime("%d/%m\n%a"))
@@ -150,7 +158,7 @@ def escribir_hoja_gantt(ws, df: pd.DataFrame, df_ingresos: pd.DataFrame,
         cell.fill      = fill(C_AZUL)
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.border    = border_thin()
-        ws.column_dimensions[get_column_letter(d_idx)].width = 10
+        ws.column_dimensions[get_column_letter(d_idx)].width = 16
 
     for fi, (_, row) in enumerate(df.iterrows(), 3):
         belnr    = int(row["BELNR_ID"])
@@ -158,7 +166,9 @@ def escribir_hoja_gantt(ws, df: pd.DataFrame, df_ingresos: pd.DataFrame,
         f_fin    = date.fromisoformat(str(row["Fecha_Fin"])[:10])
         cap_dia  = float(row["Cap_Diaria"])
         planif   = float(row["Planificado"])
-        turnos   = "2 turnos" if int(row["Horas_Prog"]) == 24 else "1 turno"
+        hp       = int(row["Horas_Prog"])
+        velocidad = cap_dia / hp if hp > 0 else 0
+        turnos   = "2 turnos" if hp == 24 else "1 turno"
 
         for c_idx, val in enumerate([
             belnr, row["Maquina"], row["Linea"], turnos, int(row["Sec"]),
@@ -172,45 +182,70 @@ def escribir_hoja_gantt(ws, df: pd.DataFrame, df_ingresos: pd.DataFrame,
             if c_idx == 8:
                 cell.number_format = "#,##0"
 
-        acum_plan = 0.0
+        # Calcular plan teórico acumulado y real acumulado día a día
+        acum_plan_teo = 0.0  # plan teórico acumulado
+        acum_real     = 0.0  # real acumulado
+
         for d_idx, dia in enumerate(dias, COLS_FIJAS + 1):
             cell = ws.cell(fi, d_idx)
             cell.border    = border_thin()
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.font      = Font(size=8)
 
-            if dia < f_inicio or dia > f_fin:
+            # Real del día (puede existir aunque sea fuera del rango teórico)
+            real_dia = ingr_dia.get((belnr, dia.strftime("%Y-%m-%d")), None)
+
+            if dia < f_inicio:
                 cell.fill = fill(C_FUERA)
                 continue
 
-            restante = planif - acum_plan
-            plan_dia = min(cap_dia, restante)
-            acum_plan += plan_dia
+            if dia > f_fin:
+                # Fuera del rango teórico — mostrar solo si hay real
+                if real_dia is not None:
+                    acum_real += real_dia
+                    cell.value = "R:" + f"{int(real_dia):,}" + "\nA:" + f"{int(acum_real):,}"
+                    cell.fill  = fill(C_AMARILLO)
+                else:
+                    cell.fill = fill(C_FUERA)
+                continue
 
-            real_dia = ingr.get((belnr, dia.strftime("%Y-%m-%d")), None)
+            # Plan del día teórico
+            restante_plan = planif - acum_plan_teo
+            plan_dia = min(cap_dia, max(restante_plan, 0))
+            acum_plan_teo += plan_dia
+            if real_dia is not None:
+                acum_real += real_dia
+
+            # "Debería ir" = plan teórico acumulado hasta este día
+            deberia = acum_plan_teo
 
             if real_dia is None:
-                cell.value = f"P: {int(plan_dia):,}"
+                cell.value = "P:" + f"{int(plan_dia):,}" + "\nD:" + f"{int(deberia):,}"
                 cell.fill  = fill(C_GRIS)
             else:
                 pct = real_dia / plan_dia * 100 if plan_dia > 0 else 0
-                cell.value = f"P:{int(plan_dia):,}\nR:{int(real_dia):,}\n{pct:.0f}%"
-                cell.fill  = fill(C_VERDE if pct >= 100 else C_AMARILLO if pct >= 75 else C_ROJO)
+                pct_acum = acum_real / deberia * 100 if deberia > 0 else 0
+                cell.value = ("P:" + f"{int(plan_dia):,}" + "\n"
+                              + "R:" + f"{int(real_dia):,}" + "\n"
+                              + "A:" + f"{int(acum_real):,}" + "\n"
+                              + "D:" + f"{int(deberia):,}" + "\n"
+                              + f"{pct:.0f}%/{pct_acum:.0f}%")
+                cell.fill  = fill(C_VERDE if pct >= 85 else C_AMARILLO if pct >= 65 else C_ROJO)
 
-        ws.row_dimensions[fi].height = 38
+        ws.row_dimensions[fi].height = 62
 
     ws.freeze_panes = f"{get_column_letter(COLS_FIJAS + 1)}3"
 
     # Leyenda
     fila_ley = len(df) + 4
-    ws.cell(fila_ley, 1, "Leyenda:").font = Font(bold=True, size=9)
+    ws.cell(fila_ley, 1, "Leyenda — P:Plan día  R:Real día  A:Acumulado real  D:Debería ir  %día/%acum").font = Font(bold=True, size=9)
     for i, (color, texto) in enumerate([
         (C_VERDE, "≥100%"), (C_AMARILLO, "75–99%"),
         (C_ROJO, "<75%"), (C_GRIS, "Sin registro"), (C_FUERA, "Fuera de rango")
     ]):
-        ws.cell(fila_ley, 2 + i*2).fill   = fill(color)
-        ws.cell(fila_ley, 2 + i*2).border = border_thin()
-        ws.cell(fila_ley, 3 + i*2, texto).font = Font(size=9)
+        ws.cell(fila_ley + 1, 2 + i*2).fill   = fill(color)
+        ws.cell(fila_ley + 1, 2 + i*2).border = border_thin()
+        ws.cell(fila_ley + 1, 3 + i*2, texto).font = Font(size=9)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

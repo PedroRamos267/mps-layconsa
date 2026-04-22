@@ -17,6 +17,10 @@ from datetime import date, datetime, timedelta
 HORA_INICIO = 7   # 07:00
 HORA_FIN_12 = 19  # 19:00 para máquinas de 1 turno
 
+# Puestos de trabajo paralelos — las OPs arrancan todas en la misma fecha
+# sin esperar la cola secuencial
+MAQUINAS_PARALELAS = {"AMAN02"}
+
 
 # ── Helpers de calendario ─────────────────────────────────────────────────────
 
@@ -126,6 +130,7 @@ def init_db(db_path: str):
             Maquina           TEXT,
             Proceso           TEXT,
             Linea             TEXT,
+            Subcomponente     TEXT,
             Horas_Prog        INTEGER,
             Fecha_Inicio      TEXT,
             Hora_Inicio       TEXT,
@@ -178,12 +183,14 @@ def cargar_plan_desde_excel(db_path: str, excel_path: str):
                  "Soplado", "soplado", "INYECCIÓN", "SOPLADO"]
     df["Proceso"] = df["Proceso"].apply(lambda p: "Plásticos" if p in plasticos else p)
     df["Linea"]          = df["Línea"].fillna("").str.strip() if "Línea" in df.columns else ""
+    df["Subcomponente"]  = df["Subcomponente"].fillna("Sin clasificar").str.strip() if "Subcomponente" in df.columns else "Sin clasificar"
     df["Fecha_Inicio_Base"] = pd.to_datetime(df["Fecha Inicio"], dayfirst=True).dt.normalize()
 
     registros = []
     for maquina, grupo in df.groupby("Maquina", sort=False):
         grupo = grupo.sort_values("Sec").reset_index(drop=True)
         horas_prog = int(grupo.loc[0, "Horas_Prog"])
+        es_paralela = maquina in MAQUINAS_PARALELAS
 
         primera_fecha = grupo.loc[0, "Fecha_Inicio_Base"]
         cursor = datetime(primera_fecha.year, primera_fecha.month,
@@ -192,13 +199,22 @@ def cargar_plan_desde_excel(db_path: str, excel_path: str):
 
         for _, row in grupo.iterrows():
             hp = int(row["Horas_Prog"])
-            velocidad      = row["Cantidad_Base"] / row["Horas"]   # und/hora
+            horas = row["Horas"] if row["Horas"] and float(row["Horas"]) > 0 else 1
+            velocidad      = row["Cantidad_Base"] / horas           # und/hora
             cap_diaria     = velocidad * hp                         # und/día
-            duracion_horas = row["Planificado"] / velocidad         # horas totales
+            duracion_horas = row["Planificado"] / velocidad if velocidad > 0 else 0
 
-            dt_inicio = cursor
-            dt_fin    = sumar_horas_habiles(cursor, duracion_horas, hp)
-            cursor    = dt_fin
+            # Máquinas paralelas: cada OP arranca en su propia fecha del Excel
+            # sin esperar que termine la anterior
+            if es_paralela:
+                f_base = row["Fecha_Inicio_Base"]
+                dt_inicio = siguiente_momento_habil(
+                    datetime(f_base.year, f_base.month, f_base.day, HORA_INICIO), hp)
+                dt_fin = sumar_horas_habiles(dt_inicio, duracion_horas, hp)
+            else:
+                dt_inicio = cursor
+                dt_fin    = sumar_horas_habiles(cursor, duracion_horas, hp)
+                cursor    = dt_fin
 
             registros.append({
                 "BELNR_ID":       int(row["BELNR_ID"]),
@@ -208,6 +224,7 @@ def cargar_plan_desde_excel(db_path: str, excel_path: str):
                 "Maquina":        maquina,
                 "Proceso":        row["Proceso"],
                 "Linea":          row["Linea"],
+                "Subcomponente":  row["Subcomponente"],
                 "Horas_Prog":     hp,
                 "Fecha_Inicio":   dt_inicio.strftime("%Y-%m-%d"),
                 "Hora_Inicio":    dt_inicio.strftime("%H:%M"),
@@ -422,32 +439,50 @@ def cargar_bom_stock(db_path: str, excel_path: str):
     con.close()
     print(f"  → {len(stk)} registros de stock cargados")
 
-    # BD_Spec — Tipo_Material2 por componente
+    # BD_Spec - Tipo_Material2, Subcomponente, Lineas
     try:
-        spec = pd.read_excel(excel_path, sheet_name="BD_Spec",
-                             usecols=["Código_Material","Tipo_Material2"])
-        spec.columns = ["ItemCode","Tipo_Material2"]
-        spec["ItemCode"] = spec["ItemCode"].astype(str).str.strip()
-        spec["Tipo_Material2"] = spec["Tipo_Material2"].fillna("Sin clasificar").str.strip()
+        spec_raw = pd.read_excel(excel_path, sheet_name="BD_Spec")
+        spec_raw.columns = spec_raw.columns.str.strip()
+        # Mapeo directo por nombre exacto del Excel
+        rename_map = {
+            "Código_Material":  "ItemCode",
+            "Tipo_Material2":   "Tipo_Material2",
+            "Subcomponente":    "Subcomponente",
+            "Líneas":           "Lineas",   # con tilde
+            "Lineas":           "Lineas",   # sin tilde
+        }
+        spec_raw = spec_raw.rename(columns=rename_map)
+        for c in ["ItemCode","Tipo_Material2","Subcomponente","Lineas"]:
+            if c not in spec_raw.columns:
+                spec_raw[c] = "Sin clasificar"
+        spec = spec_raw[["ItemCode","Tipo_Material2","Subcomponente","Lineas"]].copy()
+        spec["ItemCode"]      = spec["ItemCode"].astype(str).str.strip()
+        spec["Tipo_Material2"]= spec["Tipo_Material2"].fillna("Sin clasificar").str.strip()
+        spec["Subcomponente"] = spec["Subcomponente"].fillna("Sin clasificar").str.strip()
+        spec["Lineas"]        = spec["Lineas"].fillna("Sin clasificar").str.strip()
         con = sqlite3.connect(db_path)
         spec.to_sql("bd_spec", con, if_exists="replace", index=False)
         con.close()
-        print(f"  → {len(spec)} registros de BD_Spec cargados")
+        print(f"  -> {len(spec)} registros de BD_Spec cargados")
     except Exception as e:
-        print(f"  ⚠️  BD_Spec no cargado: {e}")
+        print(f"  Warning:  BD_Spec no cargado: {e}")
 
 
-def _explotar_bom_op(bom_df: pd.DataFrame, codigo: str, cantidad_bruta: float,
-                     cantidad_neta: float, stk_map: dict,
-                     visitados: set, nivel: int = 1) -> list:
+def _explotar_bom_op(bom_df: pd.DataFrame, codigo: str, cantidad: float,
+                     stk_semi: dict, nivel: int = 1) -> list:
     """
-    Explosión recursiva descendente del BOM.
-    - cantidad_bruta: req. bruto del nivel (para mostrar)
-    - cantidad_neta:  req. neto = bruto - stock (para explotar siguiente nivel)
-    - Si un hijo empieza con 231 → semiterminado → explotar su BOM con req. neto
-    - Si NO empieza con 231 → materia prima → stop
+    Explosión recursiva BOM con la lógica correcta:
+
+    SEMITERMINADOS (231xxx) — procesados en recursión:
+      - Consulta stock disponible en stk_semi (compartido entre PTs, se descuenta en memoria)
+      - Si stock cubre toda la necesidad → marca USAR_STOCK, no explota hijos
+      - Si no alcanza → explota solo la diferencia (necesidad - stock)
+      - El stock se reinicia por PT raíz (ver get_mrp_dia)
+
+    COMPRADOS (no 231xxx) — nivel hoja:
+      - Se acumulan como bruto, el descuento de stock se hace consolidado al final
     """
-    if nivel > 10 or cantidad_neta <= 0:
+    if nivel > 10 or cantidad <= 0:
         return []
 
     hijos = bom_df[bom_df["Codigo_Padre"] == codigo]
@@ -456,29 +491,44 @@ def _explotar_bom_op(bom_df: pd.DataFrame, codigo: str, cantidad_bruta: float,
 
     resultado = []
     for _, row in hijos.iterrows():
-        comp     = str(row["Codigo_Comp"]).strip()
-        req_b    = cantidad_bruta * row["Factor"]   # bruto basado en cantidad bruta padre
-        req_n    = cantidad_neta  * row["Factor"]   # neto basado en cantidad neta padre
-        es_semi  = comp.startswith("231")
-        stock_c  = stk_map.get(comp, 0)
-        req_neto_c = max(req_n - stock_c, 0)
+        comp    = str(row["Codigo_Comp"]).strip()
+        req     = cantidad * row["Factor"]
+        es_semi = comp.startswith("231")
 
-        resultado.append({
-            "Codigo_Comp":  comp,
-            "Desc_Comp":    str(row["Desc_Comp"]),
-            "Req_Bruto":    req_b,
-            "Req_Neto":     req_neto_c,
-            "Stock_Comp":   stock_c,
-            "Nivel":        nivel,
-            "Es_Semi":      es_semi,
-        })
+        if es_semi:
+            # Consultar stock disponible de este semiterminado
+            disp = stk_semi.get(comp, 0)
+            neto = max(req - disp, 0)
+            # Descontar stock en memoria
+            stk_semi[comp] = max(disp - req, 0)
 
-        # Si es semiterminado → explotar con req_neto (lo que falta fabricar)
-        if es_semi and comp not in visitados and req_neto_c > 0:
-            visitados.add(comp)
-            sub = _explotar_bom_op(bom_df, comp, req_b, req_neto_c,
-                                   stk_map, visitados, nivel + 1)
-            resultado.extend(sub)
+            resultado.append({
+                "Codigo_Comp": comp,
+                "Desc_Comp":   str(row["Desc_Comp"]),
+                "Req_Bruto":   req,
+                "Req_Neto":    neto,
+                "Stock_Comp":  min(disp, req),  # cuánto del stock se usa
+                "Nivel":       nivel,
+                "Es_Semi":     True,
+                "Usar_Stock":  neto == 0,
+            })
+
+            # Solo explota hacia abajo si hay neto pendiente
+            if neto > 0:
+                sub = _explotar_bom_op(bom_df, comp, neto, stk_semi, nivel + 1)
+                resultado.extend(sub)
+        else:
+            # Comprado — acumular bruto, descuento se hace al final consolidado
+            resultado.append({
+                "Codigo_Comp": comp,
+                "Desc_Comp":   str(row["Desc_Comp"]),
+                "Req_Bruto":   req,
+                "Req_Neto":    req,   # se recalcula al consolidar
+                "Stock_Comp":  0,
+                "Nivel":       nivel,
+                "Es_Semi":     False,
+                "Usar_Stock":  False,
+            })
 
     return resultado
 
@@ -519,27 +569,54 @@ def get_mrp_dia(db_path: str, fecha: date) -> pd.DataFrame:
     stk_total_df = stk_raw[stk_raw["Almacen"].isin(ALMACENES_STOCK + ALMACENES_PROD)]
     stk_map = stk_total_df.groupby("ItemCode")["En_Stock"].sum().to_dict()
 
-    # Explotar BOM desde cada OP — nivel siguiente usa req. neto
-    todos = []
+    # Explotar BOM desde cada OP usando nueva lógica semi/comprado
+    todos_semi    = []  # semiterminados (con descuento en recursión)
+    brutos_comp   = []  # comprados (bruto acumulado, descuento al final)
+
+    # Stock de semiterminados compartido entre todas las OPs del día
+    # Se descuenta progresivamente — si OP-A consume stock, OP-B lo ve reducido
+    stk_semi = {k: v for k, v in stk_map.items() if k.startswith("231")}
+
     for _, op in df_plan.iterrows():
         item     = str(op["ItemCode"]).strip()
         plan_dia = op["Plan_Dia"]
-        stock_op = stk_map.get(item, 0)
-        neto_op  = max(plan_dia - stock_op, 0)
-        visitados = {item}
-        reqs = _explotar_bom_op(bom, item, plan_dia, neto_op, stk_map, visitados)
-        todos.extend(reqs)
+        reqs = _explotar_bom_op(bom, item, plan_dia, stk_semi)
+        for r in reqs:
+            if r["Es_Semi"]:
+                todos_semi.append(r)
+            else:
+                brutos_comp.append(r)
 
-    if not todos:
+    if not todos_semi and not brutos_comp:
         return pd.DataFrame()
 
-    req_df = pd.DataFrame(todos)
+    # ── Procesar semiterminados ──────────────────────────────────────────────
+    semi_rows = []
+    if todos_semi:
+        df_semi = pd.DataFrame(todos_semi)
+        semi_agg = (df_semi.groupby(["Codigo_Comp","Desc_Comp"], as_index=False)
+                    .agg(Req_Bruto=("Req_Bruto","sum"),
+                         Req_Neto=("Req_Neto","sum"),
+                         Stock_Comp=("Stock_Comp","sum"),
+                         Nivel=("Nivel","min")))
+        semi_agg["Es_Semi"] = True
+        semi_rows = semi_agg.to_dict("records")
 
-    # Agrupar por componente
-    req = (req_df.groupby(["Codigo_Comp","Desc_Comp","Es_Semi"], as_index=False)
-           .agg(Req_Bruto=("Req_Bruto","sum"),
-                Stock_Comp=("Stock_Comp","first"),
-                Nivel=("Nivel","min")))
+    # ── Procesar comprados — descuento consolidado ───────────────────────────
+    comp_rows = []
+    if brutos_comp:
+        df_comp = pd.DataFrame(brutos_comp)
+        comp_agg = (df_comp.groupby(["Codigo_Comp","Desc_Comp"], as_index=False)
+                    .agg(Req_Bruto=("Req_Bruto","sum"), Nivel=("Nivel","min")))
+        comp_agg["Es_Semi"] = False
+        # Descuento de stock consolidado
+        comp_agg["Stock_Total_Comp"] = comp_agg["Codigo_Comp"].map(
+            lambda c: stk_map.get(c, 0))
+        comp_agg["Req_Neto"]   = (comp_agg["Req_Bruto"] - comp_agg["Stock_Total_Comp"]).clip(lower=0)
+        comp_agg["Stock_Comp"] = comp_agg["Stock_Total_Comp"]
+        comp_rows = comp_agg.drop(columns=["Stock_Total_Comp"]).to_dict("records")
+
+    req = pd.DataFrame(semi_rows + comp_rows)
 
     # Stock desglosado por almacén
     for s, col in [(s002,"Stock_ALMA002"),(s089,"Stock_ALMA089"),(sprod,"Stock_Prod")]:
@@ -549,6 +626,7 @@ def get_mrp_dia(db_path: str, fecha: date) -> pd.DataFrame:
 
     req["Stock_Total"] = req["Stock_ALMA002"] + req["Stock_ALMA089"] + req["Stock_Prod"]
     req["Req_Neto"]    = (req["Req_Bruto"] - req["Stock_Total"]).clip(lower=0)
+    req["Diferencia"]  = req["Req_Neto"]   # alias claro para la UI
     req["Alerta"]      = req["Req_Neto"] > 0
 
     # Tipo_Material2 desde BD_Spec
@@ -624,9 +702,19 @@ def get_mrp_proyectado(db_path: str) -> pd.DataFrame:
     # Pre-calcular plan teórico acumulado por OP y día
     from datetime import timedelta as _td2
 
+    # Calcular acumulado real por OP para usar Pendiente
+    con_av = sqlite3.connect(db_path)
+    try:
+        av_df = pd.read_sql(
+            "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real GROUP BY BELNR_ID",
+            con_av)
+        acum_real_map = dict(zip(av_df["BELNR_ID"].astype(int), av_df["acum"]))
+    except Exception:
+        acum_real_map = {}
+    con_av.close()
+
     for dia in dias:
         consumo_dia = {}
-        # Solo OPs activas ese día según fechas
         ops_activas = ordenes[
             (ordenes["Fecha_Inicio"] <= str(dia)) &
             (ordenes["Fecha_Fin"]    >= str(dia))
@@ -635,7 +723,15 @@ def get_mrp_proyectado(db_path: str) -> pd.DataFrame:
             f_inicio = date.fromisoformat(str(op["Fecha_Inicio"])[:10])
             cap      = float(op["Cap_Diaria"])
             planif   = float(op["Planificado"])
+            belnr    = int(op["BELNR_ID"])
             item     = str(op["ItemCode"]).strip()
+
+            # Pendiente = Planificado - Acumulado_Real
+            acum_real = acum_real_map.get(belnr, 0)
+            pendiente = max(planif - acum_real, 0)
+
+            if pendiente <= 0:
+                continue  # OP ya completada
 
             # Días hábiles previos al día actual desde f_inicio
             dias_prev = 0
@@ -645,17 +741,16 @@ def get_mrp_proyectado(db_path: str) -> pd.DataFrame:
                     dias_prev += 1
                 d += _td2(days=1)
 
-            ya_planificado = min(cap * dias_prev, planif)
-            plan_dia_teo   = min(cap, max(planif - ya_planificado, 0))
+            # Plan teórico del día basado en pendiente
+            ya_planificado = min(cap * dias_prev, pendiente)
+            plan_dia_teo   = min(cap, max(pendiente - ya_planificado, 0))
 
             if plan_dia_teo <= 0:
                 continue
 
-            # Proyección: explotar BOM con req bruto para ver consumo total
-            stk_map_proy = {}  # vacío = sin descontar stock en proyección
-            visitados = {item}
-            reqs = _explotar_bom_op(bom, item, plan_dia_teo, plan_dia_teo,
-                                    stk_map_proy, visitados)
+            # Proyección bruta sin descuento de stock
+            stk_semi_proy = {}
+            reqs = _explotar_bom_op(bom, item, plan_dia_teo, stk_semi_proy)
             for r in reqs:
                 comp = r["Codigo_Comp"]
                 consumo_dia[comp] = consumo_dia.get(comp, 0) + r["Req_Bruto"]
@@ -725,12 +820,14 @@ def get_mrp_proyectado(db_path: str) -> pd.DataFrame:
         else:
             semaforo = "verde"
 
+        diferencia = max(round(consumo_total - stock_ini, 0), 0)
         row = {
             "Tipo_Material2":      tipo_map.get(comp, "Sin clasificar"),
             "Codigo_Comp":         comp,
             "Desc_Comp":           desc_map.get(comp, ""),
             "Stock_Inicial":       round(stock_ini, 0),
             "Consumo_Total":       round(consumo_total, 0),
+            "Diferencia":          diferencia,
             "Consumo_Diario_Prom": round(consumo_diario_prom, 1),
             "Dias_Cobertura":      dias_cobertura,
             "Fecha_Quiebre":       fecha_quiebre.strftime("%d/%m/%Y") if fecha_quiebre else "✅ Sin quiebre",
@@ -822,13 +919,28 @@ def get_cumplimiento_detalle(db_path: str, fecha_ref: date = None) -> dict:
         elif o["pct"] > 0:   o["estado"] = "Atrasado"
         else:                 o["estado"] = "Pendiente"
 
-    # % por proceso
+    # % por proceso — incluye meta del día (cuánto debería llevar acumulado)
+    # Meta del día = (días transcurridos / días totales semana) × 100%
+    dias_transcurridos = sum(1 for d in detalle_dia if d["real"] > 0 or d["plan"] > 0)
+    dias_habiles_semana = len(dias_semana)
+    pct_meta_dia = round(dias_transcurridos / dias_habiles_semana * 100, 1) if dias_habiles_semana > 0 else 0
+
     proc_list = []
     for proc, v in detalle_proceso.items():
-        pct = round(v["real"] / v["plan"] * 100, 1) if v["plan"] > 0 else 0
-        proc_list.append({"proceso": proc, "plan": round(v["plan"]),
-                           "real": round(v["real"]), "pct": pct})
-    proc_list.sort(key=lambda x: x["pct"])
+        pct_real = round(v["real"] / v["plan"] * 100, 1) if v["plan"] > 0 else 0
+        # Meta acumulada = plan_proceso × (días transcurridos / días totales)
+        meta_acum = round(v["plan"] * dias_transcurridos / dias_habiles_semana) if dias_habiles_semana > 0 else 0
+        pct_vs_meta = round(v["real"] / meta_acum * 100, 1) if meta_acum > 0 else 0
+        proc_list.append({
+            "proceso":     proc,
+            "plan":        round(v["plan"]),
+            "real":        round(v["real"]),
+            "pct":         pct_real,          # % real vs plan total
+            "meta_acum":   meta_acum,          # cuánto debería llevar
+            "pct_vs_meta": pct_vs_meta,        # nota real = real / meta_acum
+            "pct_meta_dia": pct_meta_dia,      # % del plan que debería estar hecho
+        })
+    proc_list.sort(key=lambda x: x["pct_vs_meta"])
 
     pct_semana = round(real_total / plan_total * 100, 1) if plan_total > 0 else 0
     ordenes_ok = sum(1 for o in detalle_ordenes if o["estado"] == "Completo")
@@ -914,3 +1026,268 @@ def get_semanas_plan(db_path: str) -> list:
         })
         lunes += timedelta(weeks=1)
     return semanas
+
+
+def get_resumen_ops(db_path: str) -> pd.DataFrame:
+    """
+    Resumen de todas las OPs con estado actual basado en avance real.
+    """
+    con = sqlite3.connect(db_path)
+    query = """
+        SELECT
+            p.BELNR_ID, p.Proceso, p.Linea, p.Maquina, p.Sec,
+            p.ItemCode, p.Descripcion,
+            p.Fecha_Inicio, p.Hora_Inicio,
+            p.Fecha_Fin,   p.Hora_Fin,
+            p.Planificado, p.Cap_Diaria, p.Duracion_Horas,
+            COALESCE(a.acum, 0) AS Acumulado,
+            p.Planificado - COALESCE(a.acum, 0) AS Pendiente
+        FROM ordenes_plan p
+        LEFT JOIN (
+            SELECT BELNR_ID, SUM(Cantidad_Real) AS acum
+            FROM avance_real GROUP BY BELNR_ID
+        ) a ON p.BELNR_ID = a.BELNR_ID
+        ORDER BY p.Proceso, p.Linea, p.Maquina, p.Sec
+    """
+    df = pd.read_sql(query, con)
+    con.close()
+
+    df["Pct_Acum"] = (df["Acumulado"] / df["Planificado"] * 100).round(1).fillna(0)
+    df["Inicio"]   = df["Fecha_Inicio"].str[5:].str.replace("-","/") + " " + df["Hora_Inicio"]
+    df["Fin"]      = df["Fecha_Fin"].str[5:].str.replace("-","/")    + " " + df["Hora_Fin"]
+
+    def estado(pct, pendiente):
+        if pendiente <= 0:      return "Completado"
+        if pct >= 75:           return "En curso"
+        if pct > 0:             return "Parcial"
+        return "Pendiente"
+
+    df["Estado"] = df.apply(lambda r: estado(r["Pct_Acum"], r["Pendiente"]), axis=1)
+    return df
+
+
+def get_avance_campana(db_path: str, fecha_ref: date = None) -> pd.DataFrame:
+    """Avance de campana agrupado por Linea, Subcomponente y Maquina."""
+    if fecha_ref is None:
+        fecha_ref = date.today()
+
+    con = sqlite3.connect(db_path)
+    df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
+    df_av   = pd.read_sql(
+        "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real GROUP BY BELNR_ID", con)
+    con.close()
+
+    if df_plan.empty:
+        return pd.DataFrame()
+
+    df_plan = df_plan.merge(df_av, on="BELNR_ID", how="left")
+    df_plan["acum"] = df_plan["acum"].fillna(0)
+    # Subcomponente viene directo de ordenes_plan
+    if "Subcomponente" not in df_plan.columns:
+        df_plan["Subcomponente"] = "Sin clasificar"
+    df_plan["Subcomponente"] = df_plan["Subcomponente"].fillna("Sin clasificar")
+
+    fecha_str = str(fecha_ref)
+    # Todas las maquinas que ya arrancaron hasta hoy
+    arrancadas = set(df_plan[
+        df_plan["Fecha_Inicio"] <= fecha_str
+    ]["Maquina"].unique())
+
+    if not arrancadas:
+        return pd.DataFrame()
+
+    resultado = []
+    for (linea_v, maquina), grp in df_plan.groupby(["Linea","Maquina"]):
+        if maquina not in arrancadas:
+            continue
+        # Solo OPs que ya arrancaron
+        grp_arr = grp[grp["Fecha_Inicio"] <= fecha_str]
+        if grp_arr.empty:
+            continue
+
+        planificado = float(grp_arr["Planificado"].sum())
+        acumulado   = float(grp["acum"].sum())  # acumulado de todas las OPs
+        cap_diaria  = float(grp_arr["Cap_Diaria"].max())
+        horas_prog  = int(grp_arr["Horas_Prog"].iloc[0])
+        f_inicio    = date.fromisoformat(grp_arr["Fecha_Inicio"].min()[:10])
+
+        dias_trans = 0
+        d = f_inicio
+        while d <= fecha_ref:
+            if es_habil(d):
+                dias_trans += 1
+            d += timedelta(days=1)
+
+        deberia_ir  = min(cap_diaria * dias_trans, planificado)
+        diferencia  = acumulado - deberia_ir
+        dias_atraso = round(-diferencia / cap_diaria, 1) if diferencia < 0 and cap_diaria > 0 else 0
+        pct_acum    = round(acumulado / planificado * 100, 1) if planificado > 0 else 0
+        pct_deberia = round(deberia_ir / planificado * 100, 1) if planificado > 0 else 0
+
+        if diferencia >= 0:     estado = "Al dia"
+        elif dias_atraso <= 1:  estado = "Leve retraso"
+        elif dias_atraso <= 3:  estado = "Retraso"
+        else:                   estado = "Critico"
+
+        # Resumen ejecutivo: "X und atrasado = Y días"
+        und_atraso = round(-diferencia) if diferencia < 0 else 0
+        resumen = (f"-{und_atraso:,} und = {dias_atraso} días"
+                   if diferencia < 0 else "Al día ✅")
+
+        resultado.append({
+            "Linea":              linea_v,
+            "Maquina":            maquina,
+            "Planificado":        round(planificado),
+            "Deberia_Ir":         round(deberia_ir),
+            "Acumulado":          round(acumulado),
+            "Diferencia":         round(diferencia),
+            "Pct_Acum":           pct_acum,
+            "Pct_Deberia":        pct_deberia,
+            "Dias_Atraso":        dias_atraso,
+            "Cap_Diaria":         round(cap_diaria),
+            "Dias_Transcurridos": dias_trans,
+            "Estado":             estado,
+            "Resumen":            resumen,
+        })
+
+    df = pd.DataFrame(resultado)
+    if df.empty:
+        return df
+    orden = {"Critico":0,"Retraso":1,"Leve retraso":2,"Al dia":3}
+    df["_ord"] = df["Estado"].map(orden)
+    return df.sort_values(["_ord","Linea","Maquina"]).drop(columns=["_ord"]).reset_index(drop=True)
+
+
+def get_resumen_ops(db_path: str) -> pd.DataFrame:
+    """
+    Resumen de todas las OPs con estado actual basado en avance real.
+    """
+    con = sqlite3.connect(db_path)
+    query = """
+        SELECT
+            p.BELNR_ID, p.Proceso, p.Linea, p.Maquina, p.Sec,
+            p.ItemCode, p.Descripcion,
+            p.Fecha_Inicio, p.Hora_Inicio,
+            p.Fecha_Fin,   p.Hora_Fin,
+            p.Planificado, p.Cap_Diaria, p.Duracion_Horas,
+            COALESCE(a.acum, 0) AS Acumulado,
+            p.Planificado - COALESCE(a.acum, 0) AS Pendiente
+        FROM ordenes_plan p
+        LEFT JOIN (
+            SELECT BELNR_ID, SUM(Cantidad_Real) AS acum
+            FROM avance_real GROUP BY BELNR_ID
+        ) a ON p.BELNR_ID = a.BELNR_ID
+        ORDER BY p.Proceso, p.Linea, p.Maquina, p.Sec
+    """
+    df = pd.read_sql(query, con)
+    con.close()
+
+    df["Pct_Acum"] = (df["Acumulado"] / df["Planificado"] * 100).round(1).fillna(0)
+    df["Inicio"]   = df["Fecha_Inicio"].str[5:].str.replace("-","/") + " " + df["Hora_Inicio"]
+    df["Fin"]      = df["Fecha_Fin"].str[5:].str.replace("-","/")    + " " + df["Hora_Fin"]
+
+    def estado(pct, pendiente):
+        if pendiente <= 0:      return "Completado"
+        if pct >= 75:           return "En curso"
+        if pct > 0:             return "Parcial"
+        return "Pendiente"
+
+    df["Estado"] = df.apply(lambda r: estado(r["Pct_Acum"], r["Pendiente"]), axis=1)
+    return df
+
+
+def get_avance_campana(db_path: str, fecha_ref: date = None) -> pd.DataFrame:
+    """
+    Avance de campaña agrupado por Línea → Máquina.
+    Solo máquinas con OPs activas en fecha_ref.
+    Calcula desde el inicio del plan (primera OP de la máquina).
+    """
+    if fecha_ref is None:
+        fecha_ref = date.today()
+
+    con = sqlite3.connect(db_path)
+    df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
+    df_av   = pd.read_sql(
+        "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real GROUP BY BELNR_ID",
+        con)
+    con.close()
+
+    if df_plan.empty:
+        return pd.DataFrame()
+
+    # Merge acumulado real
+    df_plan = df_plan.merge(df_av, on="BELNR_ID", how="left")
+    df_plan["acum"] = df_plan["acum"].fillna(0)
+
+    # OPs activas hoy
+    fecha_str = str(fecha_ref)
+    activas_hoy = set(df_plan[
+        (df_plan["Fecha_Inicio"] <= fecha_str) &
+        (df_plan["Fecha_Fin"]    >= fecha_str)
+    ]["Maquina"].unique())
+
+    if not activas_hoy:
+        return pd.DataFrame()
+
+    resultado = []
+    for (linea, maquina), grp in df_plan.groupby(["Linea","Maquina"]):
+        if maquina not in activas_hoy:
+            continue
+
+        planificado  = grp["Planificado"].sum()
+        acumulado    = grp["acum"].sum()
+        cap_diaria   = grp["Cap_Diaria"].max()
+        horas_prog   = int(grp["Horas_Prog"].iloc[0])
+
+        # Fecha inicio del plan para esta máquina
+        f_inicio = date.fromisoformat(grp["Fecha_Inicio"].min()[:10])
+
+        # Días hábiles transcurridos desde f_inicio hasta hoy (inclusive)
+        dias_trans = 0
+        d = f_inicio
+        while d <= fecha_ref:
+            if es_habil(d):
+                dias_trans += 1
+            d += timedelta(days=1)
+
+        # Debería ir = min(cap_diaria × días_transcurridos, planificado)
+        deberia_ir = min(cap_diaria * dias_trans, planificado)
+
+        # Diferencia y días de atraso
+        diferencia   = acumulado - deberia_ir
+        dias_atraso  = round(-diferencia / cap_diaria, 1) if diferencia < 0 and cap_diaria > 0 else 0
+        pct_acum     = round(acumulado / planificado * 100, 1) if planificado > 0 else 0
+        pct_deberia  = round(deberia_ir / planificado * 100, 1) if planificado > 0 else 0
+
+        if diferencia >= 0:
+            estado = "Al día"
+        elif dias_atraso <= 1:
+            estado = "Leve retraso"
+        elif dias_atraso <= 3:
+            estado = "Retraso"
+        else:
+            estado = "Crítico"
+
+        resultado.append({
+            "Linea":        linea,
+            "Maquina":      maquina,
+            "Planificado":  round(planificado),
+            "Acumulado":    round(acumulado),
+            "Deberia_Ir":   round(deberia_ir),
+            "Diferencia":   round(diferencia),
+            "Pct_Acum":     pct_acum,
+            "Pct_Deberia":  pct_deberia,
+            "Dias_Atraso":  dias_atraso,
+            "Cap_Diaria":   round(cap_diaria),
+            "Estado":       estado,
+            "F_Inicio_Plan": str(f_inicio),
+            "Dias_Transcurridos": dias_trans,
+        })
+
+    df = pd.DataFrame(resultado)
+    if df.empty:
+        return df
+    # Ordenar: críticos primero
+    orden = {"Crítico": 0, "Retraso": 1, "Leve retraso": 2, "Al día": 3}
+    df["_ord"] = df["Estado"].map(orden)
+    return df.sort_values(["_ord","Linea","Maquina"]).drop(columns=["_ord"]).reset_index(drop=True)

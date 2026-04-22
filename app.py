@@ -12,7 +12,7 @@ import pandas as pd
 from db import (init_db, cargar_plan_desde_excel, cargar_bom_stock,
                 get_ordenes_activas_en_dia, get_primera_fecha, get_mrp_dia,
                 get_mrp_proyectado, get_cumplimiento_semanal, get_cumplimiento_detalle,
-                get_semanas_plan)
+                get_semanas_plan, get_resumen_ops, get_avance_campana)
 
 DB_PATH    = "mps_plasticos.db"
 EXCEL_PLAN = "plan_produccion.xlsx"
@@ -209,6 +209,112 @@ def build_layout():
                 ]),
             ]),
 
+            # ── PESTAÑA RESUMEN OPS ─────────────────────────────────────────────
+            dbc.Tab(label="📋 Resumen OPs", tab_id="tab-resumen", children=[
+                html.Div(className="mt-3", children=[
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(id="res-fil-proceso", placeholder="Proceso",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dcc.Dropdown(id="res-fil-linea", placeholder="Línea",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dcc.Dropdown(id="res-fil-estado",
+                                options=[
+                                    {"label":"✅ Completado",  "value":"Completado"},
+                                    {"label":"🔵 En curso",    "value":"En curso"},
+                                    {"label":"🟡 Parcial",     "value":"Parcial"},
+                                    {"label":"⬜ Pendiente",   "value":"Pendiente"},
+                                ],
+                                placeholder="Estado", multi=True,
+                                style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dbc.Input(id="res-fil-op", placeholder="Buscar OP...",
+                                      type="text", size="sm",
+                                      style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dbc.Button("🔄 Actualizar", id="btn-res-refresh",
+                                       color="secondary", size="sm", outline=True,
+                                       className="float-end"),
+                        ], width=4),
+                    ], className="mb-3 g-2"),
+                    dbc.Row(id="res-kpi-row", className="mb-3 g-2"),
+                    html.Div(id="res-tabla"),
+                ]),
+            ]),
+
+            # ── PESTAÑA AVANCE CAMPAÑA ──────────────────────────────────────────
+            dbc.Tab(label="🏭 Avance campaña", tab_id="tab-campana", children=[
+                html.Div(className="mt-3", children=[
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(id="camp-fil-linea", placeholder="Línea",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dcc.Dropdown(id="camp-fil-subcomp", placeholder="Subcomponente",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dcc.Dropdown(id="camp-fil-estado",
+                                options=[
+                                    {"label":"🔴 Crítico",      "value":"Crítico"},
+                                    {"label":"🟠 Retraso",      "value":"Retraso"},
+                                    {"label":"🟡 Leve retraso", "value":"Leve retraso"},
+                                    {"label":"✅ Al día",       "value":"Al día"},
+                                ],
+                                placeholder="Estado", multi=True,
+                                style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dbc.Button("🔄 Actualizar", id="btn-camp-refresh",
+                                       color="secondary", size="sm", outline=True,
+                                       className="float-end"),
+                        ], width=4),
+                    ], className="mb-3 g-2"),
+                    dbc.Row(id="camp-kpi-row", className="mb-3 g-2"),
+                    html.Div(id="camp-tabla"),
+                ]),
+            ]),
+
+            # ── PESTAÑA GANTT ───────────────────────────────────────────────────
+            dbc.Tab(label="📅 Gantt", tab_id="tab-gantt", children=[
+                html.Div(className="mt-3", children=[
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(id="gantt-fil-proceso", placeholder="Proceso",
+                                         style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dcc.Dropdown(id="gantt-fil-mes",
+                                         placeholder="Mes",
+                                         style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dcc.Dropdown(id="gantt-fil-maquina",
+                                         placeholder="Máquina", multi=True,
+                                         style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dcc.Dropdown(id="gantt-fil-linea",
+                                         placeholder="Línea", multi=True,
+                                         style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dbc.Button("🔄 Cargar", id="btn-gantt-load",
+                                       color="primary", size="sm",
+                                       className="float-end"),
+                        ], width=3),
+                    ], className="mb-3 g-2"),
+                    html.Div(id="gantt-container"),
+                ]),
+            ]),
+
             # ── PESTAÑA CUMPLIMIENTO ────────────────────────────────────────────
             dbc.Tab(label="📈 Cumplimiento del programa", tab_id="tab-cum", children=[
                 html.Div(className="mt-3", children=[
@@ -360,7 +466,7 @@ def actualizar_mps(fecha_str, procesos, maquinas, estados, _):
     gp = int(real_tot / plan_tot * 100) if plan_tot > 0 else 0
 
     kpis = dbc.Row([
-        dbc.Col(make_kpi("Órdenes activas", str(total), fecha_label), width=3),
+        dbc.Col(make_kpi("Órdenes activas", str(total), fecha_label, "info"), width=3),
         dbc.Col(make_kpi("Completadas", str(ok), f"de {total}", "success"), width=3),
         dbc.Col(make_kpi("Atrasadas", str(bad), "requieren atención",
                          "danger" if bad else "secondary"), width=3),
@@ -511,10 +617,10 @@ def actualizar_mrp(fecha_str, procesos, alerta_fil, _, tab):
     req_neto    = df["Req_Neto"].sum()
 
     kpis = dbc.Row([
-        dbc.Col(make_kpi("Componentes", str(total_comp), fecha_label), width=3),
+        dbc.Col(make_kpi("Componentes", str(total_comp), fecha_label, "info"), width=3),
         dbc.Col(make_kpi("Con alerta", str(int(con_alerta)),
                          "stock insuficiente", "danger" if con_alerta else "success"), width=3),
-        dbc.Col(make_kpi("Req. bruto total", fmt_num(req_bruto), "unidades necesarias"), width=3),
+        dbc.Col(make_kpi("Req. bruto total", fmt_num(req_bruto), "unidades necesarias", "info"), width=3),
         dbc.Col(make_kpi("Req. neto total", fmt_num(req_neto),
                          "a comprar/producir",
                          "danger" if req_neto > 0 else "success"), width=3),
@@ -536,6 +642,7 @@ def actualizar_mrp(fecha_str, procesos, alerta_fil, _, tab):
             {"name":"Stock prod.",   "id":"Stock_Prod",   "type":"numeric","format":{"specifier":",.0f"}},
             {"name":"Stock total",   "id":"Stock_Total",  "type":"numeric","format":{"specifier":",.0f"}},
             {"name":"Req. neto",     "id":"Req_Neto",     "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Diferencia",    "id":"Diferencia",   "type":"numeric","format":{"specifier":",.0f"}},
             {"name":"Cobertura",     "id":"Alerta_label"},
         ],
         data=df.to_dict("records"),
@@ -556,6 +663,7 @@ def actualizar_mrp(fecha_str, procesos, alerta_fil, _, tab):
             {"if":{"column_id":"Tipo_Item"},   "textAlign":"left","minWidth":"160px"},
             {"if":{"column_id":"Tipo_Material2"},"textAlign":"left"},
             {"if":{"column_id":"Req_Neto"},    "fontWeight":"500","color":"#c0392b"},
+            {"if":{"column_id":"Diferencia"},  "fontWeight":"700","color":"#c0392b","background":"#FCEBEB"},
             {"if":{"column_id":"Stock_Total"}, "fontWeight":"500","color":"#1a7a4a"},
         ],
     )
@@ -612,6 +720,7 @@ def actualizar_proyeccion(_, tipos, semaforos):
         {"name": "Descripción",       "id": "Desc_Comp"},
         {"name": "Stock inicial",     "id": "Stock_Inicial",       "type":"numeric","format":{"specifier":",.0f"}},
         {"name": "Consumo total",     "id": "Consumo_Total",       "type":"numeric","format":{"specifier":",.0f"}},
+        {"name": "Diferencia",        "id": "Diferencia",          "type":"numeric","format":{"specifier":",.0f"}},
         {"name": "Cons./día prom.",   "id": "Consumo_Diario_Prom", "type":"numeric","format":{"specifier":",.1f"}},
         {"name": "Días cobertura",    "id": "Dias_Cobertura"},
         {"name": "Fecha quiebre",     "id": "Fecha_Quiebre"},
@@ -942,9 +1051,9 @@ def actualizar_cumplimiento(_, semana_str, procesos_fil):
         dbc.Col(make_kpi(f"Semana {r['semana']}", f"{pct}%",
                          "cumplimiento", col), width=3),
         dbc.Col(make_kpi("Plan semanal", fmt_num(r["plan_total"]),
-                         "unidades"), width=3),
+                         "unidades", "info"), width=3),
         dbc.Col(make_kpi("Real producido", fmt_num(r["real_total"]),
-                         "unidades"), width=3),
+                         "unidades", "primary"), width=3),
         dbc.Col(make_kpi("Órdenes completas",
                          f"{r['ordenes_ok']} / {r['ordenes_total']}",
                          "completadas",
@@ -1006,31 +1115,61 @@ def actualizar_cumplimiento(_, semana_str, procesos_fil):
     ]), style={"borderRadius":"10px","border":"0.5px solid var(--color-border-tertiary)",
                "background":"var(--color-background-secondary)"})
 
-    # Panel proceso
+    # Panel proceso — dos barras: real acumulado y nota vs meta del día
     barras_proc = []
     for p_item in r["detalle_proceso"]:
-        p = p_item["pct"]
-        bc = color_bar(p)
+        p_real     = p_item["pct"]             # % real vs plan total
+        p_meta     = p_item.get("pct_vs_meta", 0)  # % real vs meta del día
+        p_meta_dia = p_item.get("pct_meta_dia", 0)  # % del plan que debería estar hecho
+        bc_real = color_bar(p_real)
+        bc_meta = color_bar(p_meta)
+
         barras_proc.append(
-            html.Div(style={"display":"flex","alignItems":"center","gap":"8px",
-                            "marginBottom":"8px"}, children=[
-                html.Span(p_item["proceso"][:14], style={"fontSize":"11px","width":"90px",
-                           "textAlign":"right","color":"var(--color-text-secondary)","flexShrink":"0"}),
-                html.Div(style={"flex":"1","height":"10px","background":"var(--color-border-tertiary)",
-                                "borderRadius":"4px","overflow":"hidden"}, children=[
-                    html.Div(style={"width":f"{min(p,100)}%","height":"100%",
-                                    "background":bc,"borderRadius":"4px"})
+            html.Div(style={"marginBottom":"12px"}, children=[
+                # Nombre del proceso
+                html.Div(style={"display":"flex","justifyContent":"space-between",
+                                "marginBottom":"3px"}, children=[
+                    html.Span(p_item["proceso"][:18],
+                              style={"fontSize":"11px","fontWeight":"500",
+                                     "color":"var(--color-text-primary)"}),
+                    html.Span(f"Meta: {p_meta_dia:.0f}%",
+                              style={"fontSize":"10px","color":"var(--color-text-tertiary)"}),
                 ]),
-                html.Span(f"{p:.0f}%", style={"fontSize":"11px","fontWeight":"500",
-                           "minWidth":"34px","textAlign":"right","color":bc}),
+                # Barra 1: avance real acumulado
+                html.Div(style={"display":"flex","alignItems":"center","gap":"6px","marginBottom":"4px"}, children=[
+                    html.Span("Real", style={"fontSize":"10px","width":"32px","color":"var(--color-text-secondary)","flexShrink":"0"}),
+                    html.Div(style={"flex":"1","height":"10px","background":"#e9ecef",
+                                    "borderRadius":"4px","overflow":"hidden"}, children=[
+                        html.Div(style={"width":f"{min(p_real,100)}%","height":"100%",
+                                        "background":bc_real,"borderRadius":"4px"})
+                    ]),
+                    html.Span(f"{p_real:.0f}%", style={"fontSize":"11px","fontWeight":"700",
+                               "minWidth":"34px","textAlign":"right","color":bc_real}),
+                ]),
+                # Barra 2: nota vs meta del día
+                html.Div(style={"display":"flex","alignItems":"center","gap":"6px"}, children=[
+                    html.Span("Nota", style={"fontSize":"10px","width":"32px","color":"var(--color-text-secondary)","flexShrink":"0"}),
+                    html.Div(style={"flex":"1","height":"10px","background":"#e9ecef",
+                                    "borderRadius":"4px","overflow":"hidden"}, children=[
+                        html.Div(style={"width":f"{min(p_meta,100)}%","height":"100%",
+                                        "background":bc_meta,"borderRadius":"4px"})
+                    ]),
+                    html.Span(f"{p_meta:.0f}%", style={"fontSize":"11px","fontWeight":"700",
+                               "minWidth":"34px","textAlign":"right","color":bc_meta}),
+                ]),
             ])
         )
 
     panel_proc = dbc.Card(dbc.CardBody([
-        html.P("Por proceso", style={"fontSize":"12px","fontWeight":"500",
-               "color":"var(--color-text-secondary)","marginBottom":"12px"}),
+        html.Div(style={"display":"flex","justifyContent":"space-between","marginBottom":"12px"}, children=[
+            html.P("Por proceso", style={"fontSize":"12px","fontWeight":"500",
+                   "color":"var(--color-text-secondary)","margin":"0"}),
+            html.P("Real = vs plan total  |  Nota = vs meta del día",
+                   style={"fontSize":"10px","color":"var(--color-text-tertiary)","margin":"0"}),
+        ]),
         *barras_proc,
-    ]), style={"borderRadius":"10px","border":"0.5px solid var(--color-border-tertiary)"})
+    ]), style={"borderRadius":"10px","border":"0.5px solid var(--color-border-tertiary)",
+               "background":"var(--color-background-secondary)"})
 
     # Tabla detalle órdenes
     ESTADO_COLOR = {
@@ -1136,6 +1275,7 @@ def actualizar_proyeccion_semi(_, tipos, semaforos):
         {"name":"Descripción",   "id":"Desc_Comp"},
         {"name":"Stock inicial", "id":"Stock_Inicial",       "type":"numeric","format":{"specifier":",.0f"}},
         {"name":"Consumo total", "id":"Consumo_Total",       "type":"numeric","format":{"specifier":",.0f"}},
+        {"name":"Diferencia",    "id":"Diferencia",          "type":"numeric","format":{"specifier":",.0f"}},
         {"name":"Cons./día",     "id":"Consumo_Diario_Prom", "type":"numeric","format":{"specifier":",.1f"}},
         {"name":"Días cob.",     "id":"Dias_Cobertura"},
         {"name":"Fecha quiebre", "id":"Fecha_Quiebre"},
@@ -1251,6 +1391,415 @@ def cargar_semanas(tab):
     lunes_hoy = str(hoy - timedelta(days=hoy.weekday()))
     val_default = lunes_hoy if any(s["value"] == lunes_hoy for s in semanas) else (semanas[0]["value"] if semanas else None)
     return semanas, val_default
+
+
+# ── Callback: Gantt dashboard ─────────────────────────────────────────────────
+
+@app.callback(
+    Output("gantt-fil-mes", "options"),
+    Output("gantt-fil-proceso", "options"),
+    Output("gantt-fil-maquina", "options"),
+    Output("gantt-fil-linea", "options"),
+    Input("tabs", "active_tab"),
+    Input("auto-refresh", "n_intervals"),
+)
+def cargar_opciones_gantt(tab, _):
+    try:
+        import sqlite3 as _sq
+        con = _sq.connect(DB_PATH)
+        df = pd.read_sql("SELECT DISTINCT Proceso, Maquina, Linea, Fecha_Inicio, Fecha_Fin FROM ordenes_plan", con)
+        con.close()
+
+        proc_opts = [{"label": p, "value": p} for p in sorted(df["Proceso"].unique())]
+        maq_opts  = [{"label": m, "value": m} for m in sorted(df["Maquina"].unique())]
+
+        # Meses disponibles en el plan
+        meses = set()
+        for _, row in df.iterrows():
+            for col in ["Fecha_Inicio", "Fecha_Fin"]:
+                d = date.fromisoformat(str(row[col])[:10])
+                meses.add((d.year, d.month))
+        import calendar
+        mes_opts = [
+            {"label": f"{calendar.month_name[m]} {y}", "value": f"{y}-{m:02d}"}
+            for y, m in sorted(meses)
+        ]
+        linea_opts = [{"label": l, "value": l} for l in sorted(df["Linea"].dropna().unique()) if l]
+        return mes_opts, proc_opts, maq_opts, linea_opts
+    except Exception:
+        return [], [], [], []
+
+
+@app.callback(
+    Output("gantt-container", "children"),
+    Input("btn-gantt-load", "n_clicks"),
+    State("gantt-fil-proceso", "value"),
+    State("gantt-fil-mes", "value"),
+    State("gantt-fil-maquina", "value"),
+    State("gantt-fil-linea", "value"),
+    prevent_initial_call=True,
+)
+def actualizar_gantt(_, proceso, mes_str, maquinas, lineas):
+    import sqlite3 as _sq
+    from db import es_habil, get_todos_ingresos
+
+    if not mes_str:
+        return dbc.Alert("Seleccioná un mes.", color="warning")
+
+    year, month = int(mes_str.split("-")[0]), int(mes_str.split("-")[1])
+    import calendar
+    primer_dia = date(year, month, 1)
+    ultimo_dia = date(year, month, calendar.monthrange(year, month)[1])
+    dias = [primer_dia + timedelta(days=i)
+            for i in range((ultimo_dia - primer_dia).days + 1)
+            if es_habil(primer_dia + timedelta(days=i))]
+
+    if not dias:
+        return dbc.Alert("Sin días hábiles en ese mes.", color="info")
+
+    con = _sq.connect(DB_PATH)
+    df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
+    con.close()
+    df_ingr = get_todos_ingresos(DB_PATH)
+
+    # Filtros
+    if proceso:
+        df_plan = df_plan[df_plan["Proceso"] == proceso]
+    if maquinas:
+        df_plan = df_plan[df_plan["Maquina"].isin(maquinas)]
+    if lineas:
+        df_plan = df_plan[df_plan["Linea"].isin(lineas)]
+
+    # Solo OPs activas en el mes
+    df_plan = df_plan[
+        (df_plan["Fecha_Inicio"] <= str(ultimo_dia)) &
+        (df_plan["Fecha_Fin"]    >= str(primer_dia))
+    ].reset_index(drop=True)
+
+    if df_plan.empty:
+        return dbc.Alert("No hay órdenes activas en este mes/proceso.", color="info")
+
+    # Índice ingresos
+    ingr_dia = {}
+    if not df_ingr.empty and "Cantidad_Real" in df_ingr.columns:
+        for _, r in df_ingr.iterrows():
+            ingr_dia[(int(r["BELNR_ID"]), str(r["Fecha"])[:10])] = float(r["Cantidad_Real"])
+
+    # Construir tabla
+    COLS_FIJAS = ["OP", "Máquina", "Descripción", "Planificado"]
+    cols_header = COLS_FIJAS + [d.strftime("%d/%m") for d in dias]
+
+    rows_data = []
+    for _, row in df_plan.iterrows():
+        belnr    = int(row["BELNR_ID"])
+        f_inicio = date.fromisoformat(str(row["Fecha_Inicio"])[:10])
+        f_fin    = date.fromisoformat(str(row["Fecha_Fin"])[:10])
+        cap_dia  = float(row["Cap_Diaria"])
+        planif   = float(row["Planificado"])
+
+        fila = {
+            "OP": belnr,
+            "Máquina": row["Maquina"],
+            "Descripción": row["Descripcion"][:35],
+            "Planificado": f"{int(planif):,}",
+        }
+
+        acum_plan = 0.0
+        acum_real = 0.0
+
+        for dia in dias:
+            key = dia.strftime("%d/%m")
+            real_dia = ingr_dia.get((belnr, dia.strftime("%Y-%m-%d")), None)
+
+            if dia < f_inicio:
+                fila[key] = ""
+                continue
+
+            if dia > f_fin:
+                # Fuera del rango teórico — mostrar solo si hay real registrado
+                if real_dia is not None:
+                    acum_real += real_dia
+                    fila[key] = "R:" + f"{int(real_dia):,}" + "\nA:" + f"{int(acum_real):,}"
+                else:
+                    fila[key] = ""
+                continue
+
+            restante = planif - acum_plan
+            plan_dia = min(cap_dia, max(restante, 0))
+            acum_plan += plan_dia
+            if real_dia is not None:
+                acum_real += real_dia
+
+            deberia = acum_plan
+            if real_dia is None:
+                fila[key] = "P:" + f"{int(plan_dia):,}" + "\nD:" + f"{int(deberia):,}"
+            else:
+                pct = real_dia / plan_dia * 100 if plan_dia > 0 else 0
+                fila[key] = (
+                    "P:" + f"{int(plan_dia):,}" + "\n"
+                    + "R:" + f"{int(real_dia):,}" + "\n"
+                    + "A:" + f"{int(acum_real):,}" + "\n"
+                    + "D:" + f"{int(deberia):,}" + "\n"
+                    + f"{pct:.0f}%"
+                )
+
+        rows_data.append(fila)
+
+    # Colores semáforo por celda
+    COLOR_GANTT = []
+    for i, row in enumerate(rows_data):
+        for dia in dias:
+            key = dia.strftime("%d/%m")
+            val = row.get(key, "")
+            if not val or val == "":
+                continue
+            if "R:" in val:
+                lines = val.split("\n")
+                try:
+                    pct_line = [l for l in lines if "%" in l]
+                    pct = float(pct_line[0].replace("%","").split("/")[0]) if pct_line else 0
+                    color = "#c6efce" if pct >= 85 else "#ffeb9c" if pct >= 65 else "#ffc7ce"
+                except Exception:
+                    color = "#f8f9fa"
+            else:
+                color = "#f0f0f0"
+            COLOR_GANTT.append({
+                "if": {"row_index": i, "column_id": key},
+                "backgroundColor": color,
+            })
+
+    tabla = dash_table.DataTable(
+        id="tabla-gantt",
+        columns=[{"name": c, "id": c} for c in cols_header],
+        data=rows_data,
+        style_table={"overflowX": "auto", "minWidth": "100%", "width": "100%"},
+        style_header={"backgroundColor":"#1f3864","color":"white",
+                      "fontWeight":"500","fontSize":"11px",
+                      "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_cell={"fontSize":"11px","padding":"6px 8px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center",
+                    "whiteSpace":"pre-line","minWidth":"110px","maxWidth":"140px"},
+        style_cell_conditional=[
+            {"if":{"column_id":"Descripción"},"textAlign":"left",
+             "minWidth":"220px","maxWidth":"280px"},
+            {"if":{"column_id":"OP"},"minWidth":"70px","maxWidth":"80px"},
+            {"if":{"column_id":"Máquina"},"minWidth":"80px","maxWidth":"90px"},
+            {"if":{"column_id":"Planificado"},"minWidth":"90px","maxWidth":"100px"},
+        ],
+        style_data_conditional=COLOR_GANTT,
+        page_size=30,
+        fixed_columns={"headers":True,"data":4},
+    )
+
+    titulo = f"{'  |  '.join([proceso or 'Todos', mes_str])} — {len(df_plan)} órdenes"
+    return html.Div([
+        html.P(titulo, style={"fontSize":"12px","color":"var(--color-text-secondary)",
+                               "marginBottom":"8px"}),
+        tabla,
+        html.Div(style={"marginTop":"8px","fontSize":"11px","color":"var(--color-text-secondary)"},
+                 children="P: Plan día  |  R: Real día  |  A: Acum. real  |  D: Debería ir  |  %: cumplimiento")
+    ])
+
+
+# ── Callback: Resumen OPs ─────────────────────────────────────────────────────
+
+@app.callback(
+    Output("res-kpi-row",    "children"),
+    Output("res-tabla",      "children"),
+    Output("res-fil-proceso","options"),
+    Output("res-fil-linea",  "options"),
+    Input("btn-res-refresh", "n_clicks"),
+    Input("auto-refresh",    "n_intervals"),
+    Input("res-fil-proceso", "value"),
+    Input("res-fil-linea",   "value"),
+    Input("res-fil-estado",  "value"),
+    Input("res-fil-op",      "value"),
+)
+def actualizar_resumen(_, __, procesos, lineas, estados, buscar_op):
+    df = get_resumen_ops(DB_PATH)
+    if df.empty:
+        return [], dbc.Alert("Sin datos.", color="info"), [], []
+
+    proc_opts  = [{"label":p,"value":p} for p in sorted(df["Proceso"].unique())]
+    linea_opts = [{"label":l,"value":l} for l in sorted(df["Linea"].dropna().unique()) if l]
+
+    if procesos:  df = df[df["Proceso"].isin(procesos)]
+    if lineas:    df = df[df["Linea"].isin(lineas)]
+    if estados:   df = df[df["Estado"].isin(estados)]
+    if buscar_op: df = df[df["BELNR_ID"].astype(str).str.contains(buscar_op.strip())]
+
+    total        = len(df)
+    completadas  = (df["Estado"] == "Completado").sum()
+    en_curso     = (df["Estado"] == "En curso").sum()
+    pendientes   = (df["Estado"] == "Pendiente").sum()
+
+    kpis = dbc.Row([
+        dbc.Col(make_kpi("Total OPs", str(total), "en el plan"), width=3),
+        dbc.Col(make_kpi("Completadas", str(int(completadas)), "finalizadas", "success"), width=3),
+        dbc.Col(make_kpi("En curso", str(int(en_curso)), "activas", "info"), width=3),
+        dbc.Col(make_kpi("Pendientes", str(int(pendientes)), "sin iniciar", "secondary"), width=3),
+    ], className="g-2")
+
+    ESTADO_COLOR = {
+        "Completado": "#c6efce", "En curso": "#E6F1FB",
+        "Parcial":    "#ffeb9c", "Pendiente": "#f8f9fa",
+    }
+    ESTADO_TXT = {
+        "Completado": "#1a7a4a", "En curso": "#0C447C",
+        "Parcial":    "#854F0B", "Pendiente": "#888780",
+    }
+
+    tabla = dash_table.DataTable(
+        id="tabla-resumen",
+        columns=[
+            {"name":"O. Prod.",    "id":"BELNR_ID"},
+            {"name":"Proceso",     "id":"Proceso"},
+            {"name":"Línea",       "id":"Linea"},
+            {"name":"Máquina",     "id":"Maquina"},
+            {"name":"Sec",         "id":"Sec"},
+            {"name":"Código",      "id":"ItemCode"},
+            {"name":"Descripción", "id":"Descripcion"},
+            {"name":"Inicio",      "id":"Inicio"},
+            {"name":"Fin",         "id":"Fin"},
+            {"name":"Planificado", "id":"Planificado",  "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Acumulado",   "id":"Acumulado",    "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Pendiente",   "id":"Pendiente",    "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"% Acum.",     "id":"Pct_Acum",     "type":"numeric","format":{"specifier":".1f"}},
+            {"name":"Estado",      "id":"Estado"},
+        ],
+        data=df.to_dict("records"),
+        page_size=50,
+        sort_action="native",
+        filter_action="native",
+        style_table={"overflowX":"auto"},
+        style_header={"backgroundColor":"#1f3864","color":"white",
+                      "fontWeight":"500","fontSize":"11px",
+                      "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_cell={"fontSize":"11px","padding":"6px 8px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_data_conditional=[
+            {"if":{"filter_query": '{Estado} = "' + est + '"'},
+             "backgroundColor": ESTADO_COLOR[est], "color": ESTADO_TXT[est]}
+            for est in ESTADO_COLOR
+        ],
+        style_cell_conditional=[
+            {"if":{"column_id":"Descripcion"},"textAlign":"left","minWidth":"200px"},
+            {"if":{"column_id":"Pendiente"},  "fontWeight":"500","color":"#c0392b"},
+            {"if":{"column_id":"Acumulado"},  "fontWeight":"500","color":"#1a7a4a"},
+            {"if":{"column_id":"Pct_Acum"},   "fontWeight":"700"},
+        ],
+    )
+    return kpis, tabla, proc_opts, linea_opts
+
+
+# ── Callback: Avance campaña ──────────────────────────────────────────────────
+
+@app.callback(
+    Output("camp-kpi-row",    "children"),
+    Output("camp-tabla",      "children"),
+    Output("camp-fil-linea",  "options"),
+    Output("camp-fil-subcomp","options"),
+    Input("btn-camp-refresh", "n_clicks"),
+    Input("store-fecha",      "data"),
+    Input("auto-refresh",     "n_intervals"),
+    Input("camp-fil-linea",   "value"),
+    Input("camp-fil-subcomp", "value"),
+    Input("camp-fil-estado",  "value"),
+)
+def actualizar_campana(_, fecha_str, __, lineas, subcomps, estados):
+    fecha = date.fromisoformat(fecha_str)
+    df = get_avance_campana(DB_PATH, fecha)
+
+    linea_opts  = []
+    subcomp_opts = []
+    if not df.empty:
+        linea_opts   = [{"label":l,"value":l} for l in sorted(df["Linea"].dropna().unique()) if l]
+        if "Subcomponente" in df.columns:
+            subcomp_opts = [{"label":s,"value":s} for s in sorted(df["Subcomponente"].dropna().unique()) if s]
+
+    if df.empty:
+        return [], dbc.Alert("Sin maquinas activas para esta fecha.", color="info"), linea_opts, subcomp_opts
+
+    if lineas:   df = df[df["Linea"].isin(lineas)]
+    if subcomps and "Subcomponente" in df.columns:
+        df = df[df["Subcomponente"].isin(subcomps)]
+    if estados:  df = df[df["Estado"].isin(estados)]
+
+    # KPIs
+    total    = len(df)
+    criticos = (df["Estado"] == "Crítico").sum()
+    atraso   = (df["Estado"] == "Retraso").sum()
+    al_dia   = (df["Estado"] == "Al día").sum()
+
+    kpis = dbc.Row([
+        dbc.Col(make_kpi("Máquinas activas", str(total), "hoy"), width=3),
+        dbc.Col(make_kpi("🔴 Crítico",  str(int(criticos)),
+                         "atraso > 3 días", "danger"  if criticos else "secondary"), width=3),
+        dbc.Col(make_kpi("🟠 Retraso",  str(int(atraso)),
+                         "1-3 días atrás",  "warning" if atraso   else "secondary"), width=3),
+        dbc.Col(make_kpi("✅ Al día",   str(int(al_dia)),
+                         "en ritmo",        "success" if al_dia   else "secondary"), width=3),
+    ], className="g-2")
+
+    # Colores por estado
+    ESTADO_COLOR = {
+        "Crítico":      "#ffc7ce",
+        "Retraso":      "#FFD580",
+        "Leve retraso": "#ffeb9c",
+        "Al día":       "#c6efce",
+    }
+    ESTADO_TXT = {
+        "Crítico":      "#A32D2D",
+        "Retraso":      "#7B4200",
+        "Leve retraso": "#854F0B",
+        "Al día":       "#1a7a4a",
+    }
+
+    tabla = dash_table.DataTable(
+        id="tabla-campana",
+        columns=[
+            {"name":"Línea",        "id":"Linea"},
+            {"name":"Máquina",      "id":"Maquina"},
+            {"name":"Planificado",  "id":"Planificado",  "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Debería ir",   "id":"Deberia_Ir",   "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Acumulado",    "id":"Acumulado",    "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Diferencia",   "id":"Diferencia",   "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"% Acum.",      "id":"Pct_Acum",     "type":"numeric","format":{"specifier":".1f"}},
+            {"name":"% Debería",    "id":"Pct_Deberia",  "type":"numeric","format":{"specifier":".1f"}},
+            {"name":"Días atraso",  "id":"Dias_Atraso"},
+            {"name":"Cap. diaria",  "id":"Cap_Diaria",   "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Días trans.",  "id":"Dias_Transcurridos"},
+            {"name":"Resumen",      "id":"Resumen"},
+            {"name":"Estado",       "id":"Estado"},
+        ],
+        data=df.to_dict("records"),
+        sort_action="native",
+        style_table={"overflowX":"auto"},
+        style_header={"backgroundColor":"#1f3864","color":"white",
+                      "fontWeight":"500","fontSize":"11px",
+                      "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_cell={"fontSize":"11px","padding":"6px 8px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_data_conditional=[
+            {"if":{"filter_query":'{Estado} = "' + est + '"'},
+             "backgroundColor": ESTADO_COLOR[est], "color": ESTADO_TXT[est]}
+            for est in ESTADO_COLOR
+        ],
+        style_cell_conditional=[
+            {"if":{"column_id":"Diferencia"},
+             "fontWeight":"700"},
+            {"if":{"column_id":"Acumulado"},
+             "fontWeight":"500","color":"#1a7a4a"},
+            {"if":{"column_id":"Deberia_Ir"},
+             "fontWeight":"500","color":"#0C447C"},
+            {"if":{"column_id":"Dias_Atraso"},
+             "fontWeight":"700"},
+            {"if":{"column_id":"Resumen"},
+             "fontWeight":"700","textAlign":"left","minWidth":"180px"},
+        ],
+        page_size=30,
+    )
+    return kpis, tabla, linea_opts, subcomp_opts
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
