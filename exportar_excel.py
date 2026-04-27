@@ -13,7 +13,7 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from db import init_db, cargar_plan_desde_excel, cargar_bom_stock, get_todas_ordenes, get_todos_ingresos, get_mrp_dia
+from db import init_db, cargar_plan_desde_excel, cargar_bom_stock, get_todas_ordenes, get_todos_ingresos
 
 DB_PATH    = "mps_plasticos.db"
 EXCEL_PLAN = "plan_produccion.xlsx"
@@ -46,19 +46,25 @@ def dias_habiles_rango(desde: date, hasta: date):
     return dias
 
 
+PROCESO_ALIAS = {
+    "Masas y Tintas": "M&T",
+    "Semiterminado":  "Semi",
+}
+
 def nombre_hoja(prefix: str, proceso: str) -> str:
     """Nombre de hoja válido para Excel (max 31 chars)."""
-    nombre = f"{prefix} {proceso}"
+    alias = PROCESO_ALIAS.get(proceso, proceso)
+    nombre = f"{prefix} {alias}"
     return nombre[:31]
 
 
 # ── Hoja Plan ─────────────────────────────────────────────────────────────────
 
 def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
-    encabezados = ["O. Prod.", "Máquina", "Línea", "Turnos", "Sec",
+    encabezados = ["Mes", "O. Prod.", "Máquina", "Línea", "Turnos", "Sec",
                    "Código", "Descripción", "Inicio", "Hora ini.",
-                   "Fin", "Hora fin", "Dur.(hs)", "Planificado", "Cap. diaria"]
-    anchos      = [11, 9, 12, 9, 5, 14, 40, 12, 10, 12, 10, 10, 14, 14]
+                   "Fin", "Hora fin", "Dur.(hs)", "Planificado", "Avance", "Cap. diaria"]
+    anchos      = [6, 11, 9, 12, 9, 5, 14, 40, 12, 10, 12, 10, 10, 14, 14, 14]
 
     # Título
     ws.merge_cells(f"A1:{get_column_letter(len(encabezados))}1")
@@ -77,6 +83,17 @@ def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
         ws.column_dimensions[get_column_letter(c)].width = ancho
     ws.row_dimensions[2].height = 28
 
+    # Acumulado real por OP desde avance_real
+    import sqlite3 as _sq_plan
+    try:
+        _con_p = _sq_plan.connect(DB_PATH)
+        _av = pd.read_sql(
+            "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real GROUP BY BELNR_ID", _con_p)
+        _con_p.close()
+        acum_map = dict(zip(_av["BELNR_ID"].astype(int), _av["acum"].fillna(0)))
+    except Exception:
+        acum_map = {}
+
     colores, palette, idx = {}, ["EBF3FB", "FFFFFF"], 0
     for _, row in df.iterrows():
         if row["Maquina"] not in colores:
@@ -86,13 +103,16 @@ def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
     for fi, (_, row) in enumerate(df.iterrows(), 3):
         bg      = colores.get(row["Maquina"], "FFFFFF")
         turnos  = "2 turnos" if int(row["Horas_Prog"]) == 24 else "1 turno"
+        mes_val    = int(row["Mes"]) if "Mes" in row.index and pd.notna(row.get("Mes")) else ""
+        avance_val = int(acum_map.get(int(row["BELNR_ID"]), 0))
         vals = [
+            mes_val,
             int(row["BELNR_ID"]), row["Maquina"], row["Linea"], turnos, int(row["Sec"]),
             row["ItemCode"], row["Descripcion"],
             row["Fecha_Inicio"], row["Hora_Inicio"],
             row["Fecha_Fin"],    row["Hora_Fin"],
             round(float(row["Duracion_Horas"]), 1),
-            int(row["Planificado"]), int(row["Cap_Diaria"]),
+            int(row["Planificado"]), avance_val, int(row["Cap_Diaria"]),
         ]
         for c, val in enumerate(vals, 1):
             cell = ws.cell(fi, c, val)
@@ -101,7 +121,7 @@ def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
             cell.alignment = Alignment(
                 horizontal="left" if c == 7 else "center", vertical="center")
             cell.font = Font(size=9)
-            if c in (13, 14):
+            if c in (14, 15, 16):
                 cell.number_format = "#,##0"
 
     ws.freeze_panes = "A3"
@@ -290,63 +310,8 @@ def main():
         ws_gantt = wb.create_sheet(title=nombre_hoja("Gantt", proceso))
         escribir_hoja_gantt(ws_gantt, df_proc, df_ingresos, proceso, desde, hasta)
 
-    # ── Hoja MRP ──────────────────────────────────────────────────────────────
-    from datetime import date as date_cls
-    fecha_mrp = date_cls.fromisoformat(df_plan["Fecha_Inicio"].min()[:10])
-    df_mrp = get_mrp_dia(DB_PATH, fecha_mrp)
-
-    ws_mrp = wb.create_sheet(title="MRP – Materiales")
-
-    mrp_cols = ["Tipo Material","Código comp.","Descripción","Req. bruto",
-                "ALMA002","ALMA089","Stock prod.","Stock total","Req. neto","Cobertura"]
-    mrp_ids  = ["Tipo_Material2","Codigo_Comp","Desc_Comp","Req_Bruto",
-                "Stock_ALMA002","Stock_ALMA089","Stock_Prod","Stock_Total","Req_Neto","Alerta"]
-    mrp_anchos = [18,16,42,13,12,12,12,12,12,14]
-
-    # Título
-    ws_mrp.merge_cells(f"A1:{get_column_letter(len(mrp_cols))}1")
-    ws_mrp["A1"] = f"MRP Diario – {fecha_mrp.strftime('%d/%m/%Y')}"
-    ws_mrp["A1"].font = Font(bold=True, color="FFFFFF", size=12)
-    ws_mrp["A1"].fill = fill(C_TITULO)
-    ws_mrp["A1"].alignment = Alignment(horizontal="center", vertical="center")
-    ws_mrp.row_dimensions[1].height = 22
-
-    for c_idx, (col, ancho) in enumerate(zip(mrp_cols, mrp_anchos), 1):
-        cell = ws_mrp.cell(2, c_idx, col)
-        cell.font = Font(bold=True, color="FFFFFF", size=9)
-        cell.fill = fill(C_AZUL)
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = border_thin()
-        ws_mrp.column_dimensions[get_column_letter(c_idx)].width = ancho
-    ws_mrp.row_dimensions[2].height = 28
-
-    if not df_mrp.empty:
-        for fi, (_, row) in enumerate(df_mrp.iterrows(), 3):
-            es_alerta = bool(row["Alerta"])
-            bg = "FFC7CE" if es_alerta else "C6EFCE"
-            for c_idx, col_id in enumerate(mrp_ids, 1):
-                val = row.get(col_id, "")
-                if col_id == "Alerta":
-                    val = "Falta stock" if es_alerta else "Cubierto"
-                elif col_id in ("Req_Bruto","Stock_ALMA002","Stock_ALMA089",
-                                "Stock_Prod","Stock_Total","Req_Neto"):
-                    try: val = int(float(val))
-                    except: val = 0
-                cell = ws_mrp.cell(fi, c_idx, val)
-                cell.fill = PatternFill("solid", fgColor=bg)
-                cell.border = border_thin()
-                cell.font = Font(size=9)
-                cell.alignment = Alignment(
-                    horizontal="left" if c_idx in (1,3) else "center")
-                if c_idx in (4,5,6,7,8,9):
-                    cell.number_format = "#,##0"
-            ws_mrp.row_dimensions[fi].height = 16
-
-    ws_mrp.freeze_panes = "A3"
-    ws_mrp.auto_filter.ref = f"A2:{get_column_letter(len(mrp_cols))}{len(df_mrp)+2}"
-
     wb.save(SALIDA)
-    print(f"✅ Guardado: {SALIDA} ({len(procesos)*2 + 1} hojas)")
+    print(f"✅ Guardado: {SALIDA} ({len(procesos)*2} hojas)")
 
 
 if __name__ == "__main__":

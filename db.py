@@ -167,7 +167,10 @@ def cargar_plan_desde_excel(db_path: str, excel_path: str):
                            dtype={"BELNR_ID": int, "ItemCode": str})
 
     df.columns = df.columns.str.strip()
-    df = df.rename(columns={"Descripción del artículo": "Descripcion"})
+    df = df.rename(columns={
+        "Descripción del artículo": "Descripcion",
+        "Descripción":              "Descripcion",
+    })
 
     # Limpiar filas vacías
     df = df.dropna(subset=["BELNR_ID", "Sec", "Cantidad Base", "Planificado"])
@@ -1291,3 +1294,72 @@ def get_avance_campana(db_path: str, fecha_ref: date = None) -> pd.DataFrame:
     orden = {"Crítico": 0, "Retraso": 1, "Leve retraso": 2, "Al día": 3}
     df["_ord"] = df["Estado"].map(orden)
     return df.sort_values(["_ord","Linea","Maquina"]).drop(columns=["_ord"]).reset_index(drop=True)
+
+
+def get_avance_campana_bom(db_path: str, excel_path: str) -> pd.DataFrame:
+    """
+    Lee Bom_Campaña del Excel y cruza con avance_real por Componente (ItemCode).
+    Filtra solo Proceso_Interno en: Inyección, Semiterminado, Extrusión, Masas y Tintas, Soplado.
+    """
+    PROCESOS_OK = ["Inyección","Semiterminado","Extrusión","Masas y Tintas","Soplado"]
+    try:
+        df_bom = pd.read_excel(excel_path, sheet_name="BOM_Campaña")
+        df_bom.columns = df_bom.columns.str.strip()
+    except Exception as e:
+        print(f"  Warning: Bom_Campaña no cargada: {e}")
+        return pd.DataFrame()
+
+    # Filtrar procesos válidos
+    if "Proceso_Interno" in df_bom.columns:
+        df_bom = df_bom[df_bom["Proceso_Interno"].isin(PROCESOS_OK)].reset_index(drop=True)
+
+    if df_bom.empty:
+        return pd.DataFrame()
+
+    # Estandarizar nombre columna Componente
+    for alias in ["Componente","Código Semi","Codigo_Semi","Codigo_Comp"]:
+        if alias in df_bom.columns:
+            df_bom = df_bom.rename(columns={alias: "Componente"})
+            break
+
+    df_bom["Componente"] = df_bom["Componente"].astype(str).str.strip()
+
+    # Avance real acumulado por ItemCode desde avance_real
+    con = sqlite3.connect(db_path)
+    try:
+        df_av = pd.read_sql(
+            "SELECT ItemCode, SUM(Cantidad_Real) as Avance FROM avance_real GROUP BY ItemCode",
+            con)
+        df_av["ItemCode"] = df_av["ItemCode"].astype(str).str.strip()
+    except Exception:
+        df_av = pd.DataFrame(columns=["ItemCode","Avance"])
+    con.close()
+
+    # Estandarizar nombre columna cantidad
+    cant_col = "Cantidad Total Requerida"
+    if cant_col not in df_bom.columns:
+        for c in df_bom.columns:
+            if "cantidad" in c.lower() and "requerida" in c.lower():
+                df_bom = df_bom.rename(columns={c: cant_col})
+                break
+    df_bom[cant_col] = pd.to_numeric(df_bom.get(cant_col, 0), errors="coerce").fillna(0)
+
+    # Agrupar por Componente sumando Cantidad Total Requerida
+    # Mantener columnas descriptivas del primer registro de cada componente
+    desc_cols = ["Descripción Componente","Tipo_Material","Proceso_Interno","Líneas","Subcomponente"]
+    desc_cols = [c for c in desc_cols if c in df_bom.columns]
+
+    grp_agg = {cant_col: "sum"}
+    for c in desc_cols:
+        grp_agg[c] = "first"
+
+    df_bom = df_bom.groupby("Componente", as_index=False).agg(grp_agg)
+
+    # Merge avance real
+    df_bom = df_bom.merge(df_av, left_on="Componente", right_on="ItemCode", how="left")
+    df_bom["Avance"] = df_bom["Avance"].fillna(0)
+
+    # Calcular % avance
+    df_bom["Pct_Avance"] = (df_bom["Avance"] / df_bom[cant_col] * 100).round(1).clip(upper=100).fillna(0)
+
+    return df_bom
