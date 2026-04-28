@@ -139,7 +139,12 @@ def init_db(db_path: str):
             Velocidad         REAL,
             Cap_Diaria        REAL,
             Planificado       REAL,
-            Duracion_Horas    REAL
+            Duracion_Horas    REAL,
+            Estado_OP         TEXT DEFAULT "ABIERTO",
+            Avance_SAP        REAL DEFAULT 0,
+            Mes               INTEGER DEFAULT 0,
+            Fecha_Conta       TEXT,
+            Fecha_Gantt_Desde TEXT
         );
 
         CREATE TABLE IF NOT EXISTS avance_real (
@@ -280,7 +285,6 @@ def get_ordenes_activas_en_dia(db_path: str, fecha: date) -> pd.DataFrame:
               -- OP con avance real pero aún no completada (real < planificado)
               p.Fecha_Fin < :fecha
               AND COALESCE(acum.total_real, 0) < p.Planificado
-              AND COALESCE(acum.total_real, 0) > 0
             )
           )
         ORDER BY p.Proceso, p.Maquina, p.Sec
