@@ -102,6 +102,7 @@ FERIADOS = {
     date(2026, 4, 2),   # Jueves Santo
     date(2026, 4, 3),   # Viernes Santo
 }
+MANTENIMIENTOS = {}  # {maquina: {date, ...}} — se carga desde Excel
 
 def es_habil(d: date) -> bool:
     return d.weekday() < 5 and d not in FERIADOS
@@ -163,23 +164,41 @@ def init_db(db_path: str):
 
 # ── Carga desde Excel ─────────────────────────────────────────────────────────
 
+FECHAS_EXCEL = "fechas_calculadas.xlsx"
+
 def cargar_plan_desde_excel(db_path: str, excel_path: str):
+    import os
     try:
-        df = pd.read_excel(excel_path, sheet_name="Ordenes",
-                           dtype={"BELNR_ID": int, "ItemCode": str})
+        df = pd.read_excel(excel_path, sheet_name="Ordenes", dtype={"ItemCode": str})
     except Exception:
-        df = pd.read_excel(excel_path, sheet_name=0,
-                           dtype={"BELNR_ID": int, "ItemCode": str})
+        df = pd.read_excel(excel_path, sheet_name=0, dtype={"ItemCode": str})
 
     df.columns = df.columns.str.strip()
     df = df.rename(columns={
         "Descripción del artículo": "Descripcion",
         "Descripción":              "Descripcion",
     })
+    df = df.dropna(subset=["BELNR_ID"])
+    df["BELNR_ID"] = df["BELNR_ID"].astype(int)
 
     # Limpiar filas vacías
-    df = df.dropna(subset=["BELNR_ID", "Sec", "Cantidad Base", "Planificado"])
+    df = df.dropna(subset=["Sec", "Planificado"])
     df["Sec"] = df["Sec"].astype(int)
+
+    # Si existe fechas_calculadas.xlsx, leer fechas de ahí
+    _usar_fechas = False
+    if os.path.exists(FECHAS_EXCEL):
+        try:
+            df_fc = pd.read_excel(FECHAS_EXCEL, sheet_name="Fechas", dtype={"ItemCode": str})
+            df_fc["BELNR_ID"] = df_fc["BELNR_ID"].astype(int)
+            cols_fc = [c for c in ["BELNR_ID","Fecha_Inicio","Hora_Inicio","Fecha_Fin","Hora_Fin",
+                                    "Cap_Diaria","Duracion_Horas","Estado_OP","Avance_SAP",
+                                    "Fecha_Conta","Fecha_Gantt_Desde"] if c in df_fc.columns]
+            df = df.merge(df_fc[cols_fc], on="BELNR_ID", how="left")
+            _usar_fechas = True
+            print(f"  → Fechas leídas desde {FECHAS_EXCEL}")
+        except Exception as e:
+            print(f"  ⚠️  {FECHAS_EXCEL} no disponible: {e}")
 
     df["Cantidad_Base"]  = limpiar_cantidad(df["Cantidad Base"])
     df["Planificado"]    = limpiar_cantidad(df["Planificado"])
@@ -195,7 +214,7 @@ def cargar_plan_desde_excel(db_path: str, excel_path: str):
     df["Fecha_Inicio_Base"] = pd.to_datetime(df["Fecha Inicio"], dayfirst=True).dt.normalize()
 
     registros = []
-    for maquina, grupo in df.groupby("Maquina", sort=False):
+    for (mes, maquina), grupo in df.groupby(["Mes", "Maquina"], sort=True):
         grupo = grupo.sort_values("Sec").reset_index(drop=True)
         horas_prog = int(grupo.loc[0, "Horas_Prog"])
         es_paralela = maquina in MAQUINAS_PARALELAS
@@ -207,14 +226,18 @@ def cargar_plan_desde_excel(db_path: str, excel_path: str):
 
         for _, row in grupo.iterrows():
             hp = int(row["Horas_Prog"])
-            horas = row["Horas"] if row["Horas"] and float(row["Horas"]) > 0 else 1
-            velocidad      = row["Cantidad_Base"] / horas           # und/hora
-            cap_diaria     = velocidad * hp                         # und/día
-            duracion_horas = row["Planificado"] / velocidad if velocidad > 0 else 0
+            horas = float(row["Horas"]) if float(row.get("Horas", 0)) > 0 else 1
+            velocidad      = float(row["Cantidad_Base"]) / horas
+            cap_diaria     = velocidad * hp
+            duracion_horas = float(row["Planificado"]) / velocidad if velocidad > 0 else 0
 
-            # Máquinas paralelas: cada OP arranca en su propia fecha del Excel
-            # sin esperar que termine la anterior
-            if es_paralela:
+            if _usar_fechas and pd.notna(row.get("Fecha_Inicio")):
+                # Usar fechas del Excel congelado
+                dt_inicio = datetime.fromisoformat(str(row["Fecha_Inicio"])[:10] + " " + str(row.get("Hora_Inicio","07:00")))
+                dt_fin    = datetime.fromisoformat(str(row["Fecha_Fin"])[:10]    + " " + str(row.get("Hora_Fin","07:00")))
+                cap_diaria     = float(row.get("Cap_Diaria", cap_diaria))
+                duracion_horas = float(row.get("Duracion_Horas", duracion_horas))
+            elif es_paralela:
                 f_base = row["Fecha_Inicio_Base"]
                 dt_inicio = siguiente_momento_habil(
                     datetime(f_base.year, f_base.month, f_base.day, HORA_INICIO), hp)
@@ -225,23 +248,32 @@ def cargar_plan_desde_excel(db_path: str, excel_path: str):
                 cursor    = dt_fin
 
             registros.append({
-                "BELNR_ID":       int(row["BELNR_ID"]),
-                "ItemCode":       row["ItemCode"],
-                "Descripcion":    row["Descripcion"],
-                "Sec":            int(row["Sec"]),
-                "Maquina":        maquina,
-                "Proceso":        row["Proceso"],
-                "Linea":          row["Linea"],
-                "Subcomponente":  row["Subcomponente"],
-                "Horas_Prog":     hp,
-                "Fecha_Inicio":   dt_inicio.strftime("%Y-%m-%d"),
-                "Hora_Inicio":    dt_inicio.strftime("%H:%M"),
-                "Fecha_Fin":      dt_fin.strftime("%Y-%m-%d"),
-                "Hora_Fin":       dt_fin.strftime("%H:%M"),
-                "Velocidad":      round(velocidad, 4),
-                "Cap_Diaria":     round(cap_diaria, 0),
-                "Planificado":    row["Planificado"],
-                "Duracion_Horas": round(duracion_horas, 2),
+                "BELNR_ID":          int(row["BELNR_ID"]),
+                "ItemCode":          str(row["ItemCode"]).strip(),
+                "Descripcion":       row["Descripcion"],
+                "Sec":               int(row["Sec"]),
+                "Maquina":           maquina,
+                "Proceso":           row["Proceso"],
+                "Linea":             row.get("Linea", row.get("Línea","")),
+                "Subcomponente":     row.get("Subcomponente",""),
+                "Horas_Prog":        hp,
+                "Fecha_Inicio":      dt_inicio.strftime("%Y-%m-%d"),
+                "Hora_Inicio":       dt_inicio.strftime("%H:%M"),
+                "Fecha_Fin":         dt_fin.strftime("%Y-%m-%d"),
+                "Hora_Fin":          dt_fin.strftime("%H:%M"),
+                "Velocidad":         round(velocidad, 4),
+                "Cap_Diaria":        round(cap_diaria, 0),
+                "Planificado":       float(row["Planificado"]),
+                "Duracion_Horas":    round(duracion_horas, 2),
+                "Estado_OP":         str(row.get("Estado_OP", row.get("Estado","ABIERTO"))).strip().upper(),
+                "Avance_SAP":        float(limpiar_cantidad(pd.Series([row.get("Avance_SAP",0)])).iloc[0]),
+                "Mes":               int(mes),
+                "Fecha_Conta":       str(pd.to_datetime(row["Fecha_Conta"], dayfirst=True).date())
+                                     if pd.notna(row.get("Fecha_Conta")) and str(row.get("Fecha_Conta","")).strip()
+                                     else dt_inicio.strftime("%Y-%m-%d"),
+                "Fecha_Gantt_Desde": str(pd.to_datetime(row["Fecha_Gantt_Desde"], dayfirst=True).date())
+                                     if pd.notna(row.get("Fecha_Gantt_Desde")) and str(row.get("Fecha_Gantt_Desde","")).strip()
+                                     else dt_inicio.strftime("%Y-%m-%d"),
             })
 
     out = pd.DataFrame(registros)

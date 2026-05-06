@@ -12,8 +12,7 @@ import pandas as pd
 from db import (init_db, cargar_plan_desde_excel, cargar_bom_stock,
                 get_ordenes_activas_en_dia, get_primera_fecha, get_mrp_dia,
                 get_mrp_proyectado, get_cumplimiento_semanal, get_cumplimiento_detalle,
-                get_semanas_plan, get_resumen_ops, get_avance_campana,
-                get_avance_campana_bom)
+                get_semanas_plan, get_resumen_ops, get_avance_campana)
 
 DB_PATH    = "mps_plasticos.db"
 EXCEL_PLAN = "plan_produccion.xlsx"
@@ -252,47 +251,34 @@ def build_layout():
             # ── PESTAÑA AVANCE CAMPAÑA ──────────────────────────────────────────
             dbc.Tab(label="🏭 Avance campaña", tab_id="tab-campana", children=[
                 html.Div(className="mt-3", children=[
-                    dbc.Tabs([
-                        dbc.Tab(label="Por Máquina", tab_id="camp-sub-maq", children=[
-                            html.Div(className="mt-3", children=[
-                                dbc.Row([
-                                    dbc.Col([dcc.Dropdown(id="camp-fil-linea", placeholder="Línea", multi=True, style={"fontSize":"13px"})], width=2),
-                                    dbc.Col([dcc.Dropdown(id="camp-fil-subcomp", placeholder="Subcomponente", multi=True, style={"fontSize":"13px"})], width=3),
-                                    dbc.Col([dcc.Dropdown(id="camp-fil-estado",
-                                        options=[
-                                            {"label":"🔴 Crítico","value":"Critico"},
-                                            {"label":"🟠 Retraso","value":"Retraso"},
-                                            {"label":"🟡 Leve retraso","value":"Leve retraso"},
-                                            {"label":"✅ Al día","value":"Al dia"},
-                                        ], placeholder="Estado", multi=True, style={"fontSize":"13px"})], width=3),
-                                    dbc.Col([dbc.Button("🔄 Actualizar", id="btn-camp-refresh", color="secondary", size="sm", outline=True, className="float-end")], width=4),
-                                ], className="mb-3 g-2"),
-                                dbc.Row(id="camp-kpi-row", className="mb-3 g-2"),
-                                html.Div(id="camp-tabla"),
-                            ]),
-                        ]),
-                        dbc.Tab(label="Detalle Componentes", tab_id="camp-sub-det", children=[
-                            html.Div(className="mt-3", children=[
-                                dbc.Row([
-                                    dbc.Col([dcc.Dropdown(id="campdet-fil-proc", placeholder="Proceso Interno", multi=True, style={"fontSize":"13px"})], width=3),
-                                    dbc.Col([dcc.Dropdown(id="campdet-fil-linea", placeholder="Línea", multi=True, style={"fontSize":"13px"})], width=3),
-                                    dbc.Col([dcc.Dropdown(id="campdet-fil-sub", placeholder="Subcomponente", multi=True, style={"fontSize":"13px"})], width=3),
-                                    dbc.Col([dbc.Button("🔄 Actualizar", id="btn-campdet-refresh", color="secondary", size="sm", outline=True, className="float-end")], width=3),
-                                ], className="mb-3 g-2"),
-                                html.Div(id="campdet-tabla"),
-                            ]),
-                        ]),
-                        dbc.Tab(label="Por Línea", tab_id="camp-sub-linea", children=[
-                            html.Div(className="mt-3", children=[
-                                dbc.Row([
-                                    dbc.Col([dcc.Dropdown(id="camplin-fil-proc", placeholder="Proceso Interno", multi=True, style={"fontSize":"13px"})], width=4),
-                                    dbc.Col([dcc.Dropdown(id="camplin-fil-linea", placeholder="Línea", multi=True, style={"fontSize":"13px"})], width=4),
-                                    dbc.Col([dbc.Button("🔄 Actualizar", id="btn-camplin-refresh", color="secondary", size="sm", outline=True, className="float-end")], width=4),
-                                ], className="mb-3 g-2"),
-                                html.Div(id="camplin-tabla"),
-                            ]),
-                        ]),
-                    ], id="camp-subtabs", active_tab="camp-sub-maq"),
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(id="camp-fil-linea", placeholder="Línea",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dcc.Dropdown(id="camp-fil-subcomp", placeholder="Subcomponente",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dcc.Dropdown(id="camp-fil-estado",
+                                options=[
+                                    {"label":"🔴 Crítico",      "value":"Crítico"},
+                                    {"label":"🟠 Retraso",      "value":"Retraso"},
+                                    {"label":"🟡 Leve retraso", "value":"Leve retraso"},
+                                    {"label":"✅ Al día",       "value":"Al día"},
+                                ],
+                                placeholder="Estado", multi=True,
+                                style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dbc.Button("🔄 Actualizar", id="btn-camp-refresh",
+                                       color="secondary", size="sm", outline=True,
+                                       className="float-end"),
+                        ], width=4),
+                    ], className="mb-3 g-2"),
+                    dbc.Row(id="camp-kpi-row", className="mb-3 g-2"),
+                    html.Div(id="camp-tabla"),
                 ]),
             ]),
 
@@ -1484,11 +1470,14 @@ def actualizar_gantt(_, proceso, mes_str, maquinas, lineas):
     if lineas:
         df_plan = df_plan[df_plan["Linea"].isin(lineas)]
 
-    # Solo OPs activas en el mes
-    df_plan = df_plan[
-        (df_plan["Fecha_Inicio"] <= str(ultimo_dia)) &
-        (df_plan["Fecha_Fin"]    >= str(primer_dia))
-    ].reset_index(drop=True)
+    # Filtrar por columna Mes si existe, sino por Fecha_Inicio/Fin
+    if "Mes" in df_plan.columns and df_plan["Mes"].notna().any():
+        df_plan = df_plan[df_plan["Mes"].astype(str).str.strip() == str(month)].reset_index(drop=True)
+    else:
+        df_plan = df_plan[
+            (df_plan["Fecha_Inicio"] <= str(ultimo_dia)) &
+            (df_plan["Fecha_Fin"]    >= str(primer_dia))
+        ].reset_index(drop=True)
 
     if df_plan.empty:
         return dbc.Alert("No hay órdenes activas en este mes/proceso.", color="info")
@@ -1814,176 +1803,6 @@ def actualizar_campana(_, fecha_str, __, lineas, subcomps, estados):
         page_size=30,
     )
     return kpis, tabla, linea_opts, subcomp_opts
-
-
-# ── Callback: Detalle componentes campaña ────────────────────────────────────
-
-@app.callback(
-    Output("campdet-tabla",     "children"),
-    Output("campdet-fil-proc",  "options"),
-    Output("campdet-fil-linea", "options"),
-    Output("campdet-fil-sub",   "options"),
-    Input("btn-campdet-refresh","n_clicks"),
-    Input("camp-subtabs",       "active_tab"),
-    Input("campdet-fil-proc",   "value"),
-    Input("campdet-fil-linea",  "value"),
-    Input("campdet-fil-sub",    "value"),
-)
-def actualizar_campana_detalle(_, tab, procesos, lineas, subs):
-    df = get_avance_campana_bom(DB_PATH, EXCEL_PLAN)
-
-    proc_opts  = []
-    linea_opts = []
-    sub_opts   = []
-
-    if df.empty:
-        return dbc.Alert("Sin datos en Bom_Campaña.", color="info"), [], [], []
-
-    # Opciones
-    if "Proceso_Interno" in df.columns:
-        proc_opts  = [{"label":p,"value":p} for p in sorted(df["Proceso_Interno"].dropna().unique())]
-    if "Líneas" in df.columns:
-        linea_opts = [{"label":l,"value":l} for l in sorted(df["Líneas"].dropna().unique()) if l]
-    if "Subcomponente" in df.columns:
-        sub_opts   = [{"label":s,"value":s} for s in sorted(df["Subcomponente"].dropna().unique()) if s]
-
-    # Filtros
-    if procesos and "Proceso_Interno" in df.columns:
-        df = df[df["Proceso_Interno"].isin(procesos)]
-    if lineas and "Líneas" in df.columns:
-        df = df[df["Líneas"].isin(lineas)]
-    if subs and "Subcomponente" in df.columns:
-        df = df[df["Subcomponente"].isin(subs)]
-
-    if df.empty:
-        return dbc.Alert("Sin datos para este filtro.", color="info"), proc_opts, linea_opts, sub_opts
-
-    cant_col = "Cantidad Total Requerida"
-
-    tabla = dash_table.DataTable(
-        columns=[
-            {"name":"Proceso Interno",  "id":"Proceso_Interno"},
-            {"name":"Línea",            "id":"Líneas"},
-            {"name":"Componente",       "id":"Componente"},
-            {"name":"Descripción",      "id":"Descripción Componente"},
-            {"name":"Subcomponente",    "id":"Subcomponente"},
-            {"name":"Requerido",        "id":cant_col,    "type":"numeric","format":{"specifier":",.0f"}},
-            {"name":"Avance",           "id":"Avance",    "type":"numeric","format":{"specifier":",.0f"}},
-            {"name":"% Avance",         "id":"Pct_Avance","type":"numeric","format":{"specifier":".1f"}},
-        ],
-        data=df.to_dict("records"),
-        sort_action="native", filter_action="native", page_size=50,
-        style_table={"overflowX":"auto"},
-        style_header={"backgroundColor":"#1f3864","color":"white","fontWeight":"500",
-                      "fontSize":"11px","border":"0.5px solid #dee2e6","textAlign":"center"},
-        style_cell={"fontSize":"11px","padding":"6px 8px",
-                    "border":"0.5px solid #dee2e6","textAlign":"center"},
-        style_data_conditional=[
-            {"if":{"filter_query":"{Pct_Avance} >= 90"}, "backgroundColor":"#c6efce","color":"#1a7a4a"},
-            {"if":{"filter_query":"{Pct_Avance} >= 70 && {Pct_Avance} < 90"}, "backgroundColor":"#ffeb9c","color":"#854F0B"},
-            {"if":{"filter_query":"{Pct_Avance} < 70"}, "backgroundColor":"#ffc7ce","color":"#A32D2D"},
-        ],
-        style_cell_conditional=[
-            {"if":{"column_id":"Descripción Componente"},"textAlign":"left","minWidth":"200px"},
-            {"if":{"column_id":"Avance"},   "fontWeight":"500","color":"#1a7a4a"},
-            {"if":{"column_id":"Pct_Avance"},"fontWeight":"700"},
-        ],
-    )
-    return tabla, proc_opts, linea_opts, sub_opts
-
-
-# ── Callback: Avance por línea ────────────────────────────────────────────────
-
-@app.callback(
-    Output("camplin-tabla",     "children"),
-    Output("camplin-fil-proc",  "options"),
-    Output("camplin-fil-linea", "options"),
-    Input("btn-camplin-refresh","n_clicks"),
-    Input("camp-subtabs",       "active_tab"),
-    Input("camplin-fil-proc",   "value"),
-    Input("camplin-fil-linea",  "value"),
-)
-def actualizar_campana_linea(_, tab, procesos, lineas):
-    df = get_avance_campana_bom(DB_PATH, EXCEL_PLAN)
-
-    proc_opts  = []
-    linea_opts = []
-
-    if df.empty:
-        return dbc.Alert("Sin datos en Bom_Campaña.", color="info"), [], []
-
-    if "Proceso_Interno" in df.columns:
-        proc_opts  = [{"label":p,"value":p} for p in sorted(df["Proceso_Interno"].dropna().unique())]
-    if "Líneas" in df.columns:
-        linea_opts = [{"label":l,"value":l} for l in sorted(df["Líneas"].dropna().unique()) if l]
-
-    if procesos and "Proceso_Interno" in df.columns:
-        df = df[df["Proceso_Interno"].isin(procesos)]
-    if lineas and "Líneas" in df.columns:
-        df = df[df["Líneas"].isin(lineas)]
-
-    if df.empty:
-        return dbc.Alert("Sin datos para este filtro.", color="info"), proc_opts, linea_opts
-
-    cant_col = "Cantidad Total Requerida"
-
-    # Agrupar por Proceso_Interno, Líneas, Subcomponente
-    grp = df.groupby(["Proceso_Interno","Líneas","Subcomponente"], as_index=False).agg(
-        Requerido=(cant_col, "sum"),
-        Avance=("Avance", "sum"),
-    )
-    grp["Pct_Avance"] = (grp["Avance"] / grp["Requerido"] * 100).round(1).clip(upper=100).fillna(0)
-
-    # Obtener Debería_Ir desde avance campaña por máquina y agrupar por Línea/Subcomponente
-    try:
-        df_camp = get_avance_campana(DB_PATH)
-        if not df_camp.empty and "Linea" in df_camp.columns:
-            deberia_grp = df_camp.groupby("Linea", as_index=False).agg(
-                Deberia_Ir=("Deberia_Ir","sum"))
-            # Mapear Líneas del BOM con Linea de avance campaña
-            grp = grp.merge(deberia_grp, left_on="Líneas", right_on="Linea", how="left")
-            grp["Deberia_Ir"] = grp["Deberia_Ir"].fillna(0)
-            grp["Pct_Deberia"] = (grp["Avance"] / grp["Deberia_Ir"] * 100).round(1).clip(upper=200).where(grp["Deberia_Ir"] > 0, 0)
-        else:
-            grp["Deberia_Ir"] = 0
-            grp["Pct_Deberia"] = 0
-    except Exception:
-        grp["Deberia_Ir"] = 0
-        grp["Pct_Deberia"] = 0
-
-    grp = grp.sort_values(["Proceso_Interno","Líneas","Subcomponente"]).reset_index(drop=True)
-
-    tabla = dash_table.DataTable(
-        columns=[
-            {"name":"Proceso Interno", "id":"Proceso_Interno"},
-            {"name":"Línea",           "id":"Líneas"},
-            {"name":"Subcomponente",   "id":"Subcomponente"},
-            {"name":"Requerido",       "id":"Requerido",    "type":"numeric","format":{"specifier":",.0f"}},
-            {"name":"Debería ir",      "id":"Deberia_Ir",   "type":"numeric","format":{"specifier":",.0f"}},
-            {"name":"Avance",          "id":"Avance",       "type":"numeric","format":{"specifier":",.0f"}},
-            {"name":"% Avance",        "id":"Pct_Avance",   "type":"numeric","format":{"specifier":".1f"}},
-            {"name":"% Debería",       "id":"Pct_Deberia",  "type":"numeric","format":{"specifier":".1f"}},
-        ],
-        data=grp.to_dict("records"),
-        sort_action="native", filter_action="native", page_size=30,
-        style_table={"overflowX":"auto"},
-        style_header={"backgroundColor":"#1f3864","color":"white","fontWeight":"500",
-                      "fontSize":"11px","border":"0.5px solid #dee2e6","textAlign":"center"},
-        style_cell={"fontSize":"11px","padding":"6px 8px",
-                    "border":"0.5px solid #dee2e6","textAlign":"center"},
-        style_data_conditional=[
-            {"if":{"filter_query":"{Pct_Avance} >= 90"}, "backgroundColor":"#c6efce","color":"#1a7a4a"},
-            {"if":{"filter_query":"{Pct_Avance} >= 70 && {Pct_Avance} < 90"}, "backgroundColor":"#ffeb9c","color":"#854F0B"},
-            {"if":{"filter_query":"{Pct_Avance} < 70"}, "backgroundColor":"#ffc7ce","color":"#A32D2D"},
-        ],
-        style_cell_conditional=[
-            {"if":{"column_id":"Deberia_Ir"}, "fontWeight":"500","color":"#0C447C"},
-            {"if":{"column_id":"Avance"},     "fontWeight":"500","color":"#1a7a4a"},
-            {"if":{"column_id":"Pct_Avance"}, "fontWeight":"700"},
-            {"if":{"column_id":"Pct_Deberia"},"fontWeight":"700","color":"#854F0B"},
-        ],
-    )
-    return tabla, proc_opts, linea_opts
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 

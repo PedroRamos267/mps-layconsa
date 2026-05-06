@@ -49,6 +49,7 @@ def dias_habiles_rango(desde: date, hasta: date):
 PROCESO_ALIAS = {
     "Masas y Tintas": "M&T",
     "Semiterminado":  "Semi",
+    "Terminado":      "Terminado",
 }
 
 def nombre_hoja(prefix: str, proceso: str) -> str:
@@ -61,10 +62,10 @@ def nombre_hoja(prefix: str, proceso: str) -> str:
 # ── Hoja Plan ─────────────────────────────────────────────────────────────────
 
 def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
-    encabezados = ["Mes", "O. Prod.", "Máquina", "Línea", "Turnos", "Sec",
+    encabezados = ["O. Prod.", "Máquina", "Línea", "Turnos", "Sec",
                    "Código", "Descripción", "Inicio", "Hora ini.",
-                   "Fin", "Hora fin", "Dur.(hs)", "Planificado", "Avance", "Cap. diaria"]
-    anchos      = [6, 11, 9, 12, 9, 5, 14, 40, 12, 10, 12, 10, 10, 14, 14, 14]
+                   "Fin", "Hora fin", "Dur.(hs)", "Planificado", "Cap. diaria"]
+    anchos      = [11, 9, 12, 9, 5, 14, 40, 12, 10, 12, 10, 10, 14, 14]
 
     # Título
     ws.merge_cells(f"A1:{get_column_letter(len(encabezados))}1")
@@ -83,17 +84,6 @@ def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
         ws.column_dimensions[get_column_letter(c)].width = ancho
     ws.row_dimensions[2].height = 28
 
-    # Acumulado real por OP desde avance_real
-    import sqlite3 as _sq_plan
-    try:
-        _con_p = _sq_plan.connect(DB_PATH)
-        _av = pd.read_sql(
-            "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real GROUP BY BELNR_ID", _con_p)
-        _con_p.close()
-        acum_map = dict(zip(_av["BELNR_ID"].astype(int), _av["acum"].fillna(0)))
-    except Exception:
-        acum_map = {}
-
     colores, palette, idx = {}, ["EBF3FB", "FFFFFF"], 0
     for _, row in df.iterrows():
         if row["Maquina"] not in colores:
@@ -103,16 +93,13 @@ def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
     for fi, (_, row) in enumerate(df.iterrows(), 3):
         bg      = colores.get(row["Maquina"], "FFFFFF")
         turnos  = "2 turnos" if int(row["Horas_Prog"]) == 24 else "1 turno"
-        mes_val    = int(row["Mes"]) if "Mes" in row.index and pd.notna(row.get("Mes")) else ""
-        avance_val = int(acum_map.get(int(row["BELNR_ID"]), 0))
         vals = [
-            mes_val,
             int(row["BELNR_ID"]), row["Maquina"], row["Linea"], turnos, int(row["Sec"]),
             row["ItemCode"], row["Descripcion"],
             row["Fecha_Inicio"], row["Hora_Inicio"],
             row["Fecha_Fin"],    row["Hora_Fin"],
             round(float(row["Duracion_Horas"]), 1),
-            int(row["Planificado"]), avance_val, int(row["Cap_Diaria"]),
+            int(row["Planificado"]), int(row["Cap_Diaria"]),
         ]
         for c, val in enumerate(vals, 1):
             cell = ws.cell(fi, c, val)
@@ -121,7 +108,7 @@ def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
             cell.alignment = Alignment(
                 horizontal="left" if c == 7 else "center", vertical="center")
             cell.font = Font(size=9)
-            if c in (14, 15, 16):
+            if c in (13, 14):
                 cell.number_format = "#,##0"
 
     ws.freeze_panes = "A3"
@@ -297,21 +284,41 @@ def main():
     wb = Workbook()
     wb.remove(wb.active)  # eliminar hoja vacía por defecto
 
+    # Agrupar por Mes+Proceso para generar hojas separadas por mes
+    meses = sorted(df_plan["Mes"].dropna().unique().astype(int)) if "Mes" in df_plan.columns else [0]
+
     procesos = sorted(df_plan["Proceso"].unique())
     for proceso in procesos:
-        df_proc = df_plan[df_plan["Proceso"] == proceso].reset_index(drop=True)
-        print(f"  → {proceso}: {len(df_proc)} órdenes")
+        df_proc_full = df_plan[df_plan["Proceso"] == proceso].reset_index(drop=True)
 
-        # Hoja Plan
-        ws_plan = wb.create_sheet(title=nombre_hoja("Plan", proceso))
-        escribir_hoja_plan(ws_plan, df_proc, proceso)
+        # Si hay columna Mes, generar una hoja por mes
+        if "Mes" in df_plan.columns and df_plan["Mes"].notna().any():
+            meses_proc = sorted(df_proc_full["Mes"].dropna().unique().astype(int))
+            for mes in meses_proc:
+                df_proc = df_proc_full[df_proc_full["Mes"].astype(int) == mes].reset_index(drop=True)
+                if df_proc.empty:
+                    continue
+                alias_proc = PROCESO_ALIAS.get(proceso, proceso)
+                suffix = f"M{mes}"
+                print(f"  → {proceso} Mes {mes}: {len(df_proc)} órdenes")
 
-        # Hoja Gantt
-        ws_gantt = wb.create_sheet(title=nombre_hoja("Gantt", proceso))
-        escribir_hoja_gantt(ws_gantt, df_proc, df_ingresos, proceso, desde, hasta)
+                ws_plan = wb.create_sheet(title=f"Plan {alias_proc} {suffix}"[:31])
+                escribir_hoja_plan(ws_plan, df_proc, f"{proceso} — Mes {mes}")
+
+                # Rango de fechas del mes
+                f_ini_mes = date.fromisoformat(df_proc["Fecha_Inicio"].min()[:10])
+                f_fin_mes = date.fromisoformat(df_proc["Fecha_Fin"].max()[:10])
+                ws_gantt = wb.create_sheet(title=f"Gantt {alias_proc} {suffix}"[:31])
+                escribir_hoja_gantt(ws_gantt, df_proc, df_ingresos, f"{proceso} — Mes {mes}", f_ini_mes, f_fin_mes)
+        else:
+            print(f"  → {proceso}: {len(df_proc_full)} órdenes")
+            ws_plan = wb.create_sheet(title=nombre_hoja("Plan", proceso))
+            escribir_hoja_plan(ws_plan, df_proc_full, proceso)
+            ws_gantt = wb.create_sheet(title=nombre_hoja("Gantt", proceso))
+            escribir_hoja_gantt(ws_gantt, df_proc_full, df_ingresos, proceso, desde, hasta)
 
     wb.save(SALIDA)
-    print(f"✅ Guardado: {SALIDA} ({len(procesos)*2} hojas)")
+    print(f"✅ Guardado: {SALIDA}")
 
 
 if __name__ == "__main__":
