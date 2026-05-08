@@ -314,10 +314,15 @@ def get_ordenes_activas_en_dia(db_path: str, fecha: date) -> pd.DataFrame:
           AND (
             p.Fecha_Fin >= :fecha
             OR (
-              -- OP con avance real pero aún no completada (real < planificado)
+              -- OP vencida pero no completada
               p.Fecha_Fin < :fecha
               AND COALESCE(acum.total_real, 0) < p.Planificado
             )
+          )
+          AND (
+            -- Filtrar por mes: solo mostrar OPs del mes de la fecha seleccionada
+            CAST(COALESCE(p.Mes, 0) AS INTEGER) = 0
+            OR CAST(COALESCE(p.Mes, 0) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
           )
         ORDER BY p.Proceso, p.Maquina, p.Sec
     """
@@ -462,6 +467,9 @@ def cargar_bom_stock(db_path: str, excel_path: str):
             print("  ⚠️  No se encontró hoja Stock")
             return
     stk.columns = stk.columns.str.strip()
+    # Renombrar columna ItemCode si viene como Unnamed: 0
+    if "Unnamed: 0" in stk.columns and "ItemCode" not in stk.columns:
+        stk = stk.rename(columns={"Unnamed: 0": "ItemCode"})
     stk = stk.rename(columns={
         "Número de artículo":   "ItemCode",
         "Descripción del artículo": "Descripcion",
@@ -1113,7 +1121,9 @@ def get_avance_campana(db_path: str, fecha_ref: date = None) -> pd.DataFrame:
     con = sqlite3.connect(db_path)
     df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
     df_av   = pd.read_sql(
-        "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real GROUP BY BELNR_ID", con)
+        "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real "
+        "WHERE Fecha <= ? GROUP BY BELNR_ID",
+        con, params=[str(fecha_ref if fecha_ref else date.today())])
     con.close()
 
     if df_plan.empty:
@@ -1247,8 +1257,9 @@ def get_avance_campana(db_path: str, fecha_ref: date = None) -> pd.DataFrame:
     con = sqlite3.connect(db_path)
     df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
     df_av   = pd.read_sql(
-        "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real GROUP BY BELNR_ID",
-        con)
+        "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real "
+        "WHERE Fecha <= ? GROUP BY BELNR_ID",
+        con, params=[str(fecha_ref if fecha_ref else date.today())])
     con.close()
 
     if df_plan.empty:
@@ -1269,19 +1280,21 @@ def get_avance_campana(db_path: str, fecha_ref: date = None) -> pd.DataFrame:
         return pd.DataFrame()
 
     resultado = []
-    for (linea, maquina), grp in df_plan.groupby(["Linea","Maquina"]):
+    for maquina, grp in df_plan.groupby("Maquina"):
         if maquina not in activas_hoy:
             continue
 
-        planificado  = grp["Planificado"].sum()
-        acumulado    = grp["acum"].sum()
-        cap_diaria   = grp["Cap_Diaria"].max()
-        horas_prog   = int(grp["Horas_Prog"].iloc[0])
+        proceso_v = grp["Proceso"].iloc[0] if "Proceso" in grp.columns else ""
+        lineas_v  = ", ".join(sorted(grp["Linea"].dropna().unique())) if "Linea" in grp.columns else ""
 
-        # Fecha inicio del plan para esta máquina
+        planificado = float(grp["Planificado"].sum())
+        acumulado   = float(grp["acum"].sum())
+        cap_diaria  = float(grp["Cap_Diaria"].max())
+
+        # Fecha inicio de la primera OP de esta máquina
         f_inicio = date.fromisoformat(grp["Fecha_Inicio"].min()[:10])
 
-        # Días hábiles transcurridos desde f_inicio hasta hoy (inclusive)
+        # Días hábiles trabajados desde f_inicio hasta fecha_ref
         dias_trans = 0
         d = f_inicio
         while d <= fecha_ref:
@@ -1289,47 +1302,40 @@ def get_avance_campana(db_path: str, fecha_ref: date = None) -> pd.DataFrame:
                 dias_trans += 1
             d += timedelta(days=1)
 
-        # Debería ir = min(cap_diaria × días_transcurridos, planificado)
-        deberia_ir = min(cap_diaria * dias_trans, planificado)
+        # Debería ir = Cap_Diaria × días hábiles trabajados (sin exceder planificado)
+        deberia_ir  = min(cap_diaria * dias_trans, planificado)
+        diferencia  = acumulado - deberia_ir
+        dias_atraso = round(-diferencia / cap_diaria, 1) if diferencia < 0 and cap_diaria > 0 else 0
+        pct_acum    = round(acumulado / planificado * 100, 1) if planificado > 0 else 0
+        pct_deberia = round(deberia_ir / planificado * 100, 1) if planificado > 0 else 0
 
-        # Diferencia y días de atraso
-        diferencia   = acumulado - deberia_ir
-        dias_atraso  = round(-diferencia / cap_diaria, 1) if diferencia < 0 and cap_diaria > 0 else 0
-        pct_acum     = round(acumulado / planificado * 100, 1) if planificado > 0 else 0
-        pct_deberia  = round(deberia_ir / planificado * 100, 1) if planificado > 0 else 0
-
-        if diferencia >= 0:
-            estado = "Al día"
-        elif dias_atraso <= 1:
-            estado = "Leve retraso"
-        elif dias_atraso <= 3:
-            estado = "Retraso"
-        else:
-            estado = "Crítico"
+        if diferencia >= 0:     estado = "Al dia"
+        elif dias_atraso <= 1:  estado = "Leve retraso"
+        elif dias_atraso <= 3:  estado = "Retraso"
+        else:                   estado = "Critico"
 
         resultado.append({
-            "Linea":        linea,
-            "Maquina":      maquina,
-            "Planificado":  round(planificado),
-            "Acumulado":    round(acumulado),
-            "Deberia_Ir":   round(deberia_ir),
-            "Diferencia":   round(diferencia),
-            "Pct_Acum":     pct_acum,
-            "Pct_Deberia":  pct_deberia,
-            "Dias_Atraso":  dias_atraso,
-            "Cap_Diaria":   round(cap_diaria),
-            "Estado":       estado,
-            "F_Inicio_Plan": str(f_inicio),
+            "Proceso":            proceso_v,
+            "Maquina":            maquina,
+            "Linea":              lineas_v,
+            "Planificado":        round(planificado),
+            "Deberia_Ir":         round(deberia_ir),
+            "Acumulado":          round(acumulado),
+            "Diferencia":         round(diferencia),
+            "Pct_Acum":           pct_acum,
+            "Pct_Deberia":        pct_deberia,
+            "Dias_Atraso":        dias_atraso,
+            "Cap_Diaria":         round(cap_diaria),
             "Dias_Transcurridos": dias_trans,
+            "Estado":             estado,
         })
 
     df = pd.DataFrame(resultado)
     if df.empty:
         return df
-    # Ordenar: críticos primero
-    orden = {"Crítico": 0, "Retraso": 1, "Leve retraso": 2, "Al día": 3}
-    df["_ord"] = df["Estado"].map(orden)
-    return df.sort_values(["_ord","Linea","Maquina"]).drop(columns=["_ord"]).reset_index(drop=True)
+    orden = {"Critico": 0, "Retraso": 1, "Leve retraso": 2, "Al dia": 3}
+    df["_ord"] = df["Estado"].map(orden).fillna(4)
+    return df.sort_values(["_ord","Proceso","Maquina"]).drop(columns=["_ord"]).reset_index(drop=True)
 
 
 def get_avance_campana_bom(db_path: str, excel_path: str) -> pd.DataFrame:
@@ -1399,3 +1405,99 @@ def get_avance_campana_bom(db_path: str, excel_path: str) -> pd.DataFrame:
     df_bom["Pct_Avance"] = (df_bom["Avance"] / df_bom[cant_col] * 100).round(1).clip(upper=100).fillna(0)
 
     return df_bom
+
+
+def get_cumplimiento_mensual_maquina(db_path: str, excel_path: str,
+                                     mes: int, fecha_ref: date = None) -> pd.DataFrame:
+    """
+    Cumplimiento mensual por máquina.
+    Plan = Dias_Planificados × Cap_Diaria (de Calendario_Maquinas o calculado)
+    Real = suma avance_real del mes
+    """
+    if fecha_ref is None:
+        fecha_ref = date.today()
+
+    # Leer Calendario_Maquinas
+    try:
+        df_cal = pd.read_excel(excel_path, sheet_name="Calendario_Maquinas")
+        df_cal.columns = df_cal.columns.str.strip().str.rstrip(":").str.strip()
+        df_cal = df_cal.rename(columns={"Máquina": "Maquina"})
+        df_cal = df_cal.dropna(subset=["Mes","Maquina"])
+        df_cal["Mes"] = df_cal["Mes"].astype(int)
+        # Buscar columna días — normalizar nombres quitando espacios y dos puntos
+        col_map = {c.strip().rstrip(":").strip(): c for c in df_cal.columns}
+        col_dias = None
+        for nombre in ["Días Planificados", "Dias_Planificados", "Dias Planificados"]:
+            if nombre in col_map:
+                col_dias = col_map[nombre]
+                break
+        if col_dias:
+            df_cal["Dias_Plan"] = pd.to_numeric(df_cal[col_dias], errors="coerce").fillna(0)
+        elif "Horas Planificadas" in df_cal.columns:
+            df_cal["Dias_Plan"] = pd.to_numeric(df_cal["Horas Planificadas"], errors="coerce").fillna(0) / 24
+        else:
+            df_cal["Dias_Plan"] = 0
+        df_cal = df_cal[df_cal["Mes"] == mes][["Maquina","Dias_Plan"]]
+    except Exception as e:
+        print(f"  Warning Calendario_Maquinas: {e}")
+        df_cal = pd.DataFrame(columns=["Maquina","Dias_Plan"])
+
+    # Ordenes del mes
+    con = sqlite3.connect(db_path)
+    df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
+
+    import calendar as _cal
+    primer_dia = date(fecha_ref.year, mes, 1)
+    ultimo_dia = date(fecha_ref.year, mes, _cal.monthrange(fecha_ref.year, mes)[1])
+    hasta = min(fecha_ref, ultimo_dia)
+
+    df_av = pd.read_sql(
+        "SELECT BELNR_ID, SUM(Cantidad_Real) as real_mes FROM avance_real "
+        "WHERE Fecha >= ? AND Fecha <= ? GROUP BY BELNR_ID",
+        con, params=[str(primer_dia), str(hasta)])
+    con.close()
+
+    # Filtrar plan por mes
+    if "Mes" in df_plan.columns and df_plan["Mes"].notna().any():
+        df_plan = df_plan[df_plan["Mes"].astype(str).str.strip() == str(mes)]
+
+    if df_plan.empty:
+        return pd.DataFrame()
+
+    df_plan = df_plan.merge(df_av, on="BELNR_ID", how="left")
+    df_plan["real_mes"] = df_plan["real_mes"].fillna(0)
+
+    resultado = []
+    for maquina, grp in df_plan.groupby("Maquina"):
+        proceso_v  = grp["Proceso"].iloc[0] if "Proceso" in grp.columns else ""
+        cap_diaria = float(grp["Cap_Diaria"].max())
+        real_mes   = float(grp["real_mes"].sum())
+
+        cal_row = df_cal[df_cal["Maquina"] == maquina]
+        if not cal_row.empty and float(cal_row["Dias_Plan"].iloc[0]) > 0:
+            dias_plan = float(cal_row["Dias_Plan"].iloc[0])
+        else:
+            dias_plan = 0
+            d = primer_dia
+            while d <= ultimo_dia:
+                if es_habil(d):
+                    dias_plan += 1
+                d += timedelta(days=1)
+
+        plan_mes = round(dias_plan * cap_diaria)
+        pct      = round(real_mes / plan_mes * 100, 1) if plan_mes > 0 else 0
+
+        resultado.append({
+            "Proceso":    proceso_v,
+            "Maquina":    maquina,
+            "Dias_Plan":  dias_plan,
+            "Cap_Diaria": round(cap_diaria),
+            "Plan_Mes":   plan_mes,
+            "Real_Mes":   round(real_mes),
+            "Pct":        pct,
+        })
+
+    df = pd.DataFrame(resultado)
+    if df.empty:
+        return df
+    return df.sort_values(["Proceso","Maquina"]).reset_index(drop=True)

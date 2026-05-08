@@ -10,6 +10,7 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 
 from db import (init_db, cargar_plan_desde_excel, cargar_bom_stock,
+                get_cumplimiento_mensual_maquina,
                 get_ordenes_activas_en_dia, get_primera_fecha, get_mrp_dia,
                 get_mrp_proyectado, get_cumplimiento_semanal, get_cumplimiento_detalle,
                 get_semanas_plan, get_resumen_ops, get_avance_campana)
@@ -253,20 +254,24 @@ def build_layout():
                 html.Div(className="mt-3", children=[
                     dbc.Row([
                         dbc.Col([
+                            dcc.Dropdown(id="camp-fil-proceso", placeholder="Proceso",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
+                            dcc.Dropdown(id="camp-fil-maquina", placeholder="Máquina",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=2),
+                        dbc.Col([
                             dcc.Dropdown(id="camp-fil-linea", placeholder="Línea",
                                          multi=True, style={"fontSize":"13px"}),
                         ], width=2),
                         dbc.Col([
-                            dcc.Dropdown(id="camp-fil-subcomp", placeholder="Subcomponente",
-                                         multi=True, style={"fontSize":"13px"}),
-                        ], width=3),
-                        dbc.Col([
                             dcc.Dropdown(id="camp-fil-estado",
                                 options=[
-                                    {"label":"🔴 Crítico",      "value":"Crítico"},
+                                    {"label":"🔴 Crítico",      "value":"Critico"},
                                     {"label":"🟠 Retraso",      "value":"Retraso"},
                                     {"label":"🟡 Leve retraso", "value":"Leve retraso"},
-                                    {"label":"✅ Al día",       "value":"Al día"},
+                                    {"label":"✅ Al día",       "value":"Al dia"},
                                 ],
                                 placeholder="Estado", multi=True,
                                 style={"fontSize":"13px"}),
@@ -275,7 +280,7 @@ def build_layout():
                             dbc.Button("🔄 Actualizar", id="btn-camp-refresh",
                                        color="secondary", size="sm", outline=True,
                                        className="float-end"),
-                        ], width=4),
+                        ], width=3),
                     ], className="mb-3 g-2"),
                     dbc.Row(id="camp-kpi-row", className="mb-3 g-2"),
                     html.Div(id="camp-tabla"),
@@ -318,27 +323,60 @@ def build_layout():
             # ── PESTAÑA CUMPLIMIENTO ────────────────────────────────────────────
             dbc.Tab(label="📈 Cumplimiento del programa", tab_id="tab-cum", children=[
                 html.Div(className="mt-3", children=[
-                    dbc.Row([
-                        dbc.Col([
-                            dcc.Dropdown(id="cum-fil-semana", placeholder="Semana",
-                                         style={"fontSize":"13px"}),
-                        ], width=3),
-                        dbc.Col([
-                            dcc.Dropdown(id="cum-fil-proceso", placeholder="Proceso",
-                                         multi=True, style={"fontSize":"13px"}),
-                        ], width=3),
-                        dbc.Col([
-                            dbc.Button("🔄 Actualizar", id="btn-cum-refresh",
-                                       color="secondary", size="sm", outline=True,
-                                       className="float-end"),
-                        ], width=6),
-                    ], className="mb-3 g-2"),
-                    dbc.Row(id="cum-kpi-row", className="mb-3 g-2"),
-                    dbc.Row([
-                        dbc.Col(html.Div(id="cum-panel-dias"),  width=7),
-                        dbc.Col(html.Div(id="cum-panel-proc"),  width=5),
-                    ], className="mb-3 g-2"),
-                    html.Div(id="cum-tabla"),
+                    dbc.Tabs([
+                        # Sub-pestaña semanal
+                        dbc.Tab(label="📅 Semanal", tab_id="cum-sub-semanal", children=[
+                            html.Div(className="mt-3", children=[
+                                dbc.Row([
+                                    dbc.Col([
+                                        dcc.Dropdown(id="cum-fil-mes", placeholder="Mes",
+                                                     style={"fontSize":"13px"}),
+                                    ], width=2),
+                                    dbc.Col([
+                                        dcc.Dropdown(id="cum-fil-semana", placeholder="Semana",
+                                                     style={"fontSize":"13px"}),
+                                    ], width=3),
+                                    dbc.Col([
+                                        dcc.Dropdown(id="cum-fil-proceso", placeholder="Proceso",
+                                                     multi=True, style={"fontSize":"13px"}),
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Button("🔄 Actualizar", id="btn-cum-refresh",
+                                                   color="secondary", size="sm", outline=True,
+                                                   className="float-end"),
+                                    ], width=4),
+                                ], className="mb-3 g-2"),
+                                dbc.Row(id="cum-kpi-row", className="mb-3 g-2"),
+                                dbc.Row([
+                                    dbc.Col(html.Div(id="cum-panel-dias"),  width=7),
+                                    dbc.Col(html.Div(id="cum-panel-proc"),  width=5),
+                                ], className="mb-3 g-2"),
+                                html.Div(id="cum-tabla"),
+                            ]),
+                        ]),
+                        # Sub-pestaña mensual
+                        dbc.Tab(label="📆 Mensual por Máquina", tab_id="cum-sub-mensual", children=[
+                            html.Div(className="mt-3", children=[
+                                dbc.Row([
+                                    dbc.Col([
+                                        dcc.Dropdown(id="cumm-fil-mes", placeholder="Mes",
+                                                     style={"fontSize":"13px"}),
+                                    ], width=2),
+                                    dbc.Col([
+                                        dcc.Dropdown(id="cumm-fil-proceso", placeholder="Proceso",
+                                                     multi=True, style={"fontSize":"13px"}),
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Button("🔄 Actualizar", id="btn-cumm-refresh",
+                                                   color="secondary", size="sm", outline=True,
+                                                   className="float-end"),
+                                    ], width=7),
+                                ], className="mb-3 g-2"),
+                                dbc.Row(id="cumm-kpi-row", className="mb-2 g-2"),
+                                html.Div(id="cumm-tabla"),
+                            ]),
+                        ]),
+                    ], id="cum-subtabs", active_tab="cum-sub-semanal"),
                 ]),
             ]),
 
@@ -1043,21 +1081,55 @@ def actualizar_cumplimiento(_, semana_str, procesos_fil):
     if procesos_fil:
         ordenes_fil = [o for o in ordenes_fil if o["Proceso"] in procesos_fil]
 
-    pct = r["pct_semana"]
+    # KPIs dinámicos según filtro de proceso
+    if procesos_fil:
+        plan_fil  = sum(o.get("Plan_Dia", 0) for o in ordenes_fil)
+        real_fil  = sum(o.get("Real_Dia", 0) for o in ordenes_fil)
+        # Recalcular sumando todos los días de la semana
+        from db import get_ordenes_activas_en_dia as _get_od
+        plan_sem_fil = 0
+        real_sem_fil = 0
+        ords_ok_fil  = 0
+        ords_tot_fil = len(set(o["BELNR_ID"] for o in ordenes_fil))
+        for d in r["detalle_dia"]:
+            try:
+                partes = d["fecha"].split(" ")
+                if len(partes) == 2:
+                    dm = partes[1].split("/")
+                    fecha_d = date(fecha.year, int(dm[1]), int(dm[0]))
+                    df_d = _get_od(DB_PATH, fecha_d)
+                    if not df_d.empty:
+                        df_d_fil = df_d[df_d["Proceso"].isin(procesos_fil)]
+                        plan_sem_fil += df_d_fil["Plan_Dia"].sum()
+                        real_sem_fil += df_d_fil["Real_Dia"].sum()
+            except Exception:
+                pass
+        pct = round(real_sem_fil / plan_sem_fil * 100, 1) if plan_sem_fil > 0 else 0
+        plan_show = plan_sem_fil
+        real_show = real_sem_fil
+        ords_ok   = sum(1 for o in ordenes_fil if float(o.get("Acumulado_Real",0)) >= float(o.get("Planificado",1)))
+        ords_tot  = ords_tot_fil
+    else:
+        pct       = r["pct_semana"]
+        plan_show = r["plan_total"]
+        real_show = r["real_total"]
+        ords_ok   = r["ordenes_ok"]
+        ords_tot  = r["ordenes_total"]
+
     col = "success" if pct >= 90 else "warning" if pct >= 70 else "danger"
 
     # KPIs
     kpis = dbc.Row([
         dbc.Col(make_kpi(f"Semana {r['semana']}", f"{pct}%",
                          "cumplimiento", col), width=3),
-        dbc.Col(make_kpi("Plan semanal", fmt_num(r["plan_total"]),
+        dbc.Col(make_kpi("Plan semanal", fmt_num(plan_show),
                          "unidades", "info"), width=3),
-        dbc.Col(make_kpi("Real producido", fmt_num(r["real_total"]),
+        dbc.Col(make_kpi("Real producido", fmt_num(real_show),
                          "unidades", "primary"), width=3),
         dbc.Col(make_kpi("Órdenes completas",
-                         f"{r['ordenes_ok']} / {r['ordenes_total']}",
+                         f"{ords_ok} / {ords_tot}",
                          "completadas",
-                         "success" if r["ordenes_ok"]==r["ordenes_total"] else "warning"),
+                         "success" if ords_ok == ords_tot else "warning"),
                 width=3),
     ], className="g-2")
 
@@ -1382,15 +1454,38 @@ def exportar_semi(_):
 @app.callback(
     Output("cum-fil-semana", "options"),
     Output("cum-fil-semana", "value"),
+    Output("cum-fil-mes",    "options"),
     Input("tabs", "active_tab"),
+    Input("cum-fil-mes", "value"),
 )
-def cargar_semanas(tab):
-    semanas = get_semanas_plan(DB_PATH)
-    # Seleccionar semana actual por defecto
+def cargar_semanas(tab, mes_sel):
+    import calendar as _cal
+    _meses_es = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                 "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+    # Opciones de mes desde DB
+    try:
+        import sqlite3 as _sq2
+        _con2 = _sq2.connect(DB_PATH)
+        _meses = pd.read_sql("SELECT DISTINCT Mes FROM ordenes_plan WHERE Mes > 0", _con2)["Mes"].dropna().astype(int).tolist()
+        _con2.close()
+        mes_opts = [{"label": _meses_es[m], "value": m} for m in sorted(_meses) if 1 <= m <= 12]
+    except Exception:
+        mes_opts = []
+
+    # Filtrar semanas por mes seleccionado
+    semanas_todas = get_semanas_plan(DB_PATH)
+    if mes_sel:
+        semanas = [s for s in semanas_todas if date.fromisoformat(s["value"]).month == int(mes_sel)
+                   or (date.fromisoformat(s["value"]) + timedelta(days=4)).month == int(mes_sel)]
+        if not semanas:
+            semanas = semanas_todas
+    else:
+        semanas = semanas_todas
+
     hoy = date.today()
     lunes_hoy = str(hoy - timedelta(days=hoy.weekday()))
     val_default = lunes_hoy if any(s["value"] == lunes_hoy for s in semanas) else (semanas[0]["value"] if semanas else None)
-    return semanas, val_default
+    return semanas, val_default, mes_opts
 
 
 # ── Callback: Gantt dashboard ─────────────────────────────────────────────────
@@ -1470,14 +1565,11 @@ def actualizar_gantt(_, proceso, mes_str, maquinas, lineas):
     if lineas:
         df_plan = df_plan[df_plan["Linea"].isin(lineas)]
 
-    # Filtrar por columna Mes si existe, sino por Fecha_Inicio/Fin
-    if "Mes" in df_plan.columns and df_plan["Mes"].notna().any():
-        df_plan = df_plan[df_plan["Mes"].astype(str).str.strip() == str(month)].reset_index(drop=True)
-    else:
-        df_plan = df_plan[
-            (df_plan["Fecha_Inicio"] <= str(ultimo_dia)) &
-            (df_plan["Fecha_Fin"]    >= str(primer_dia))
-        ].reset_index(drop=True)
+    # Solo OPs activas en el mes
+    df_plan = df_plan[
+        (df_plan["Fecha_Inicio"] <= str(ultimo_dia)) &
+        (df_plan["Fecha_Fin"]    >= str(primer_dia))
+    ].reset_index(drop=True)
 
     if df_plan.empty:
         return dbc.Alert("No hay órdenes activas en este mes/proceso.", color="info")
@@ -1698,41 +1790,45 @@ def actualizar_resumen(_, __, procesos, lineas, estados, buscar_op):
 # ── Callback: Avance campaña ──────────────────────────────────────────────────
 
 @app.callback(
-    Output("camp-kpi-row",    "children"),
-    Output("camp-tabla",      "children"),
-    Output("camp-fil-linea",  "options"),
-    Output("camp-fil-subcomp","options"),
-    Input("btn-camp-refresh", "n_clicks"),
-    Input("store-fecha",      "data"),
-    Input("auto-refresh",     "n_intervals"),
-    Input("camp-fil-linea",   "value"),
-    Input("camp-fil-subcomp", "value"),
-    Input("camp-fil-estado",  "value"),
+    Output("camp-kpi-row",     "children"),
+    Output("camp-tabla",       "children"),
+    Output("camp-fil-linea",   "options"),
+    Output("camp-fil-proceso", "options"),
+    Output("camp-fil-maquina", "options"),
+    Input("btn-camp-refresh",  "n_clicks"),
+    Input("store-fecha",       "data"),
+    Input("auto-refresh",      "n_intervals"),
+    Input("camp-fil-linea",    "value"),
+    Input("camp-fil-estado",   "value"),
+    Input("camp-fil-proceso",  "value"),
+    Input("camp-fil-maquina",  "value"),
 )
-def actualizar_campana(_, fecha_str, __, lineas, subcomps, estados):
+def actualizar_campana(_, fecha_str, __, lineas, estados, procesos, maquinas):
     fecha = date.fromisoformat(fecha_str)
     df = get_avance_campana(DB_PATH, fecha)
 
-    linea_opts  = []
-    subcomp_opts = []
+    linea_opts = []
+    proc_opts  = []
+    maq_opts   = []
     if not df.empty:
-        linea_opts   = [{"label":l,"value":l} for l in sorted(df["Linea"].dropna().unique()) if l]
-        if "Subcomponente" in df.columns:
-            subcomp_opts = [{"label":s,"value":s} for s in sorted(df["Subcomponente"].dropna().unique()) if s]
+        linea_opts = [{"label":l,"value":l} for l in sorted(df["Linea"].dropna().unique()) if l and str(l).strip()]
+        if "Proceso" in df.columns:
+            proc_opts = [{"label":p,"value":p} for p in sorted(df["Proceso"].dropna().unique()) if p and str(p).strip()]
+        maq_opts = [{"label":m,"value":m} for m in sorted(df["Maquina"].dropna().unique()) if m]
 
     if df.empty:
-        return [], dbc.Alert("Sin maquinas activas para esta fecha.", color="info"), linea_opts, subcomp_opts
+        return [], dbc.Alert("Sin maquinas activas para esta fecha.", color="info"), linea_opts, proc_opts, maq_opts
 
+    if procesos: df = df[df["Proceso"].isin(procesos)]
+    if maquinas: df = df[df["Maquina"].isin(maquinas)]
     if lineas:   df = df[df["Linea"].isin(lineas)]
-    if subcomps and "Subcomponente" in df.columns:
-        df = df[df["Subcomponente"].isin(subcomps)]
     if estados:  df = df[df["Estado"].isin(estados)]
 
     # KPIs
     total    = len(df)
-    criticos = (df["Estado"] == "Crítico").sum()
+    criticos = (df["Estado"] == "Critico").sum()
     atraso   = (df["Estado"] == "Retraso").sum()
-    al_dia   = (df["Estado"] == "Al día").sum()
+    al_dia   = (df["Estado"] == "Al dia").sum()
 
     kpis = dbc.Row([
         dbc.Col(make_kpi("Máquinas activas", str(total), "hoy"), width=3),
@@ -1746,22 +1842,22 @@ def actualizar_campana(_, fecha_str, __, lineas, subcomps, estados):
 
     # Colores por estado
     ESTADO_COLOR = {
-        "Crítico":      "#ffc7ce",
+        "Critico":      "#ffc7ce",
         "Retraso":      "#FFD580",
         "Leve retraso": "#ffeb9c",
-        "Al día":       "#c6efce",
+        "Al dia":       "#c6efce",
     }
     ESTADO_TXT = {
-        "Crítico":      "#A32D2D",
+        "Critico":      "#A32D2D",
         "Retraso":      "#7B4200",
         "Leve retraso": "#854F0B",
-        "Al día":       "#1a7a4a",
+        "Al dia":       "#1a7a4a",
     }
 
     tabla = dash_table.DataTable(
         id="tabla-campana",
         columns=[
-            {"name":"Línea",        "id":"Linea"},
+            {"name":"Proceso",      "id":"Proceso"},
             {"name":"Máquina",      "id":"Maquina"},
             {"name":"Planificado",  "id":"Planificado",  "type":"numeric","format":{"specifier":",.0f"}},
             {"name":"Debería ir",   "id":"Deberia_Ir",   "type":"numeric","format":{"specifier":",.0f"}},
@@ -1772,7 +1868,6 @@ def actualizar_campana(_, fecha_str, __, lineas, subcomps, estados):
             {"name":"Días atraso",  "id":"Dias_Atraso"},
             {"name":"Cap. diaria",  "id":"Cap_Diaria",   "type":"numeric","format":{"specifier":",.0f"}},
             {"name":"Días trans.",  "id":"Dias_Transcurridos"},
-            {"name":"Resumen",      "id":"Resumen"},
             {"name":"Estado",       "id":"Estado"},
         ],
         data=df.to_dict("records"),
@@ -1802,7 +1897,96 @@ def actualizar_campana(_, fecha_str, __, lineas, subcomps, estados):
         ],
         page_size=30,
     )
-    return kpis, tabla, linea_opts, subcomp_opts
+    return kpis, tabla, linea_opts, proc_opts, maq_opts
+
+# ── Callback: Cumplimiento mensual por máquina ───────────────────────────────
+
+@app.callback(
+    Output("cumm-kpi-row",     "children"),
+    Output("cumm-tabla",       "children"),
+    Output("cumm-fil-mes",     "options"),
+    Output("cumm-fil-proceso", "options"),
+    Input("btn-cumm-refresh",  "n_clicks"),
+    Input("cum-subtabs",       "active_tab"),
+    Input("cumm-fil-mes",      "value"),
+    Input("cumm-fil-proceso",  "value"),
+)
+def actualizar_cumplimiento_mensual_maq(_, tab, mes_sel, procesos):
+    _meses_es = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                 "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+    try:
+        import sqlite3 as _sq
+        _con = _sq.connect(DB_PATH)
+        _meses = pd.read_sql("SELECT DISTINCT Mes FROM ordenes_plan WHERE Mes > 0", _con)["Mes"].dropna().astype(int).tolist()
+        _con.close()
+        mes_opts = [{"label": _meses_es[m], "value": m} for m in sorted(_meses) if 1 <= m <= 12]
+    except Exception:
+        mes_opts = []
+
+    # Default al mes actual
+    if not mes_sel:
+        hoy = date.today()
+        mes_sel = hoy.month
+        if not any(o["value"] == mes_sel for o in mes_opts) and mes_opts:
+            mes_sel = mes_opts[-1]["value"]
+
+    df = get_cumplimiento_mensual_maquina(DB_PATH, EXCEL_PLAN, int(mes_sel), date.today())
+
+    proc_opts = []
+    if not df.empty and "Proceso" in df.columns:
+        proc_opts = [{"label":p,"value":p} for p in sorted(df["Proceso"].dropna().unique()) if p]
+
+    if df.empty:
+        return [], dbc.Alert("Sin datos para este mes.", color="info"), mes_opts, proc_opts
+
+    if procesos:
+        df = df[df["Proceso"].isin(procesos)]
+
+    if df.empty:
+        return [], dbc.Alert("Sin datos para este filtro.", color="info"), mes_opts, proc_opts
+
+    plan_total = df["Plan_Mes"].sum()
+    real_total = df["Real_Mes"].sum()
+    pct_total  = round(real_total / plan_total * 100, 1) if plan_total > 0 else 0
+    col = "success" if pct_total >= 90 else "warning" if pct_total >= 70 else "danger"
+
+    kpis = dbc.Row([
+        dbc.Col(make_kpi(f"Cumplimiento {_meses_es[int(mes_sel)]}", f"{pct_total}%", "", col), width=3),
+        dbc.Col(make_kpi("Plan mes",  fmt_num(plan_total), "unidades", "info"),    width=3),
+        dbc.Col(make_kpi("Real mes",  fmt_num(real_total), "unidades", "primary"), width=3),
+        dbc.Col(make_kpi("Máquinas",  str(len(df)), "en el filtro"),               width=3),
+    ], className="g-2")
+
+    tabla = dash_table.DataTable(
+        columns=[
+            {"name":"Proceso",      "id":"Proceso"},
+            {"name":"Máquina",      "id":"Maquina"},
+            {"name":"Días plan",    "id":"Dias_Plan",  "type":"numeric","format":{"specifier":".2f"}},
+            {"name":"Cap. diaria",  "id":"Cap_Diaria", "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Plan mes",     "id":"Plan_Mes",   "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Real mes",     "id":"Real_Mes",   "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"% Cumpl.",     "id":"Pct",        "type":"numeric","format":{"specifier":".1f"}},
+        ],
+        data=df.to_dict("records"),
+        sort_action="native", filter_action="native", page_size=30,
+        style_table={"overflowX":"auto"},
+        style_header={"backgroundColor":"#1f3864","color":"white","fontWeight":"500",
+                      "fontSize":"11px","border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_cell={"fontSize":"11px","padding":"6px 10px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_data_conditional=[
+            {"if":{"filter_query":"{Pct} >= 90"}, "backgroundColor":"#c6efce","color":"#1a7a4a"},
+            {"if":{"filter_query":"{Pct} >= 70 && {Pct} < 90"}, "backgroundColor":"#ffeb9c","color":"#854F0B"},
+            {"if":{"filter_query":"{Pct} < 70"}, "backgroundColor":"#ffc7ce","color":"#A32D2D"},
+        ],
+        style_cell_conditional=[
+            {"if":{"column_id":"Plan_Mes"},  "fontWeight":"500","color":"#0C447C"},
+            {"if":{"column_id":"Real_Mes"},  "fontWeight":"500","color":"#1a7a4a"},
+            {"if":{"column_id":"Pct"},       "fontWeight":"700"},
+        ],
+    )
+    return kpis, tabla, mes_opts, proc_opts
+
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
