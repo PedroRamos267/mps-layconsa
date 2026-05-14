@@ -10,7 +10,6 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 
 from db import (init_db, cargar_plan_desde_excel, cargar_bom_stock,
-                get_cumplimiento_mensual_maquina,
                 get_ordenes_activas_en_dia, get_primera_fecha, get_mrp_dia,
                 get_mrp_proyectado, get_cumplimiento_semanal, get_cumplimiento_detalle,
                 get_semanas_plan, get_resumen_ops, get_avance_campana)
@@ -323,60 +322,30 @@ def build_layout():
             # ── PESTAÑA CUMPLIMIENTO ────────────────────────────────────────────
             dbc.Tab(label="📈 Cumplimiento del programa", tab_id="tab-cum", children=[
                 html.Div(className="mt-3", children=[
-                    dbc.Tabs([
-                        # Sub-pestaña semanal
-                        dbc.Tab(label="📅 Semanal", tab_id="cum-sub-semanal", children=[
-                            html.Div(className="mt-3", children=[
-                                dbc.Row([
-                                    dbc.Col([
-                                        dcc.Dropdown(id="cum-fil-mes", placeholder="Mes",
-                                                     style={"fontSize":"13px"}),
-                                    ], width=2),
-                                    dbc.Col([
-                                        dcc.Dropdown(id="cum-fil-semana", placeholder="Semana",
-                                                     style={"fontSize":"13px"}),
-                                    ], width=3),
-                                    dbc.Col([
-                                        dcc.Dropdown(id="cum-fil-proceso", placeholder="Proceso",
-                                                     multi=True, style={"fontSize":"13px"}),
-                                    ], width=3),
-                                    dbc.Col([
-                                        dbc.Button("🔄 Actualizar", id="btn-cum-refresh",
-                                                   color="secondary", size="sm", outline=True,
-                                                   className="float-end"),
-                                    ], width=4),
-                                ], className="mb-3 g-2"),
-                                dbc.Row(id="cum-kpi-row", className="mb-3 g-2"),
-                                dbc.Row([
-                                    dbc.Col(html.Div(id="cum-panel-dias"),  width=7),
-                                    dbc.Col(html.Div(id="cum-panel-proc"),  width=5),
-                                ], className="mb-3 g-2"),
-                                html.Div(id="cum-tabla"),
-                            ]),
-                        ]),
-                        # Sub-pestaña mensual
-                        dbc.Tab(label="📆 Mensual por Máquina", tab_id="cum-sub-mensual", children=[
-                            html.Div(className="mt-3", children=[
-                                dbc.Row([
-                                    dbc.Col([
-                                        dcc.Dropdown(id="cumm-fil-mes", placeholder="Mes",
-                                                     style={"fontSize":"13px"}),
-                                    ], width=2),
-                                    dbc.Col([
-                                        dcc.Dropdown(id="cumm-fil-proceso", placeholder="Proceso",
-                                                     multi=True, style={"fontSize":"13px"}),
-                                    ], width=3),
-                                    dbc.Col([
-                                        dbc.Button("🔄 Actualizar", id="btn-cumm-refresh",
-                                                   color="secondary", size="sm", outline=True,
-                                                   className="float-end"),
-                                    ], width=7),
-                                ], className="mb-3 g-2"),
-                                dbc.Row(id="cumm-kpi-row", className="mb-2 g-2"),
-                                html.Div(id="cumm-tabla"),
-                            ]),
-                        ]),
-                    ], id="cum-subtabs", active_tab="cum-sub-semanal"),
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(id="cum-fil-semana", placeholder="Semana",
+                                         style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dcc.Dropdown(id="cum-fil-proceso", placeholder="Proceso",
+                                         multi=True, style={"fontSize":"13px"}),
+                        ], width=3),
+                        dbc.Col([
+                            dbc.Button("🔄 Actualizar", id="btn-cum-refresh",
+                                       color="secondary", size="sm", outline=True,
+                                       className="me-2"),
+                            dbc.Button("⬇️ Descargar semana", id="btn-cum-descargar",
+                                       color="success", size="sm", outline=True),
+                            dcc.Download(id="cum-download"),
+                        ], width=6, className="d-flex align-items-center justify-content-end gap-2"),
+                    ], className="mb-3 g-2"),
+                    dbc.Row(id="cum-kpi-row", className="mb-3 g-2"),
+                    dbc.Row([
+                        dbc.Col(html.Div(id="cum-panel-dias"),  width=7),
+                        dbc.Col(html.Div(id="cum-panel-proc"),  width=5),
+                    ], className="mb-3 g-2"),
+                    html.Div(id="cum-tabla"),
                 ]),
             ]),
 
@@ -1081,55 +1050,21 @@ def actualizar_cumplimiento(_, semana_str, procesos_fil):
     if procesos_fil:
         ordenes_fil = [o for o in ordenes_fil if o["Proceso"] in procesos_fil]
 
-    # KPIs dinámicos según filtro de proceso
-    if procesos_fil:
-        plan_fil  = sum(o.get("Plan_Dia", 0) for o in ordenes_fil)
-        real_fil  = sum(o.get("Real_Dia", 0) for o in ordenes_fil)
-        # Recalcular sumando todos los días de la semana
-        from db import get_ordenes_activas_en_dia as _get_od
-        plan_sem_fil = 0
-        real_sem_fil = 0
-        ords_ok_fil  = 0
-        ords_tot_fil = len(set(o["BELNR_ID"] for o in ordenes_fil))
-        for d in r["detalle_dia"]:
-            try:
-                partes = d["fecha"].split(" ")
-                if len(partes) == 2:
-                    dm = partes[1].split("/")
-                    fecha_d = date(fecha.year, int(dm[1]), int(dm[0]))
-                    df_d = _get_od(DB_PATH, fecha_d)
-                    if not df_d.empty:
-                        df_d_fil = df_d[df_d["Proceso"].isin(procesos_fil)]
-                        plan_sem_fil += df_d_fil["Plan_Dia"].sum()
-                        real_sem_fil += df_d_fil["Real_Dia"].sum()
-            except Exception:
-                pass
-        pct = round(real_sem_fil / plan_sem_fil * 100, 1) if plan_sem_fil > 0 else 0
-        plan_show = plan_sem_fil
-        real_show = real_sem_fil
-        ords_ok   = sum(1 for o in ordenes_fil if float(o.get("Acumulado_Real",0)) >= float(o.get("Planificado",1)))
-        ords_tot  = ords_tot_fil
-    else:
-        pct       = r["pct_semana"]
-        plan_show = r["plan_total"]
-        real_show = r["real_total"]
-        ords_ok   = r["ordenes_ok"]
-        ords_tot  = r["ordenes_total"]
-
+    pct = r["pct_semana"]
     col = "success" if pct >= 90 else "warning" if pct >= 70 else "danger"
 
     # KPIs
     kpis = dbc.Row([
         dbc.Col(make_kpi(f"Semana {r['semana']}", f"{pct}%",
                          "cumplimiento", col), width=3),
-        dbc.Col(make_kpi("Plan semanal", fmt_num(plan_show),
+        dbc.Col(make_kpi("Plan semanal", fmt_num(r["plan_total"]),
                          "unidades", "info"), width=3),
-        dbc.Col(make_kpi("Real producido", fmt_num(real_show),
+        dbc.Col(make_kpi("Real producido", fmt_num(r["real_total"]),
                          "unidades", "primary"), width=3),
         dbc.Col(make_kpi("Órdenes completas",
-                         f"{ords_ok} / {ords_tot}",
+                         f"{r['ordenes_ok']} / {r['ordenes_total']}",
                          "completadas",
-                         "success" if ords_ok == ords_tot else "warning"),
+                         "success" if r["ordenes_ok"]==r["ordenes_total"] else "warning"),
                 width=3),
     ], className="g-2")
 
@@ -1454,38 +1389,15 @@ def exportar_semi(_):
 @app.callback(
     Output("cum-fil-semana", "options"),
     Output("cum-fil-semana", "value"),
-    Output("cum-fil-mes",    "options"),
     Input("tabs", "active_tab"),
-    Input("cum-fil-mes", "value"),
 )
-def cargar_semanas(tab, mes_sel):
-    import calendar as _cal
-    _meses_es = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio",
-                 "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
-    # Opciones de mes desde DB
-    try:
-        import sqlite3 as _sq2
-        _con2 = _sq2.connect(DB_PATH)
-        _meses = pd.read_sql("SELECT DISTINCT Mes FROM ordenes_plan WHERE Mes > 0", _con2)["Mes"].dropna().astype(int).tolist()
-        _con2.close()
-        mes_opts = [{"label": _meses_es[m], "value": m} for m in sorted(_meses) if 1 <= m <= 12]
-    except Exception:
-        mes_opts = []
-
-    # Filtrar semanas por mes seleccionado
-    semanas_todas = get_semanas_plan(DB_PATH)
-    if mes_sel:
-        semanas = [s for s in semanas_todas if date.fromisoformat(s["value"]).month == int(mes_sel)
-                   or (date.fromisoformat(s["value"]) + timedelta(days=4)).month == int(mes_sel)]
-        if not semanas:
-            semanas = semanas_todas
-    else:
-        semanas = semanas_todas
-
+def cargar_semanas(tab):
+    semanas = get_semanas_plan(DB_PATH)
+    # Seleccionar semana actual por defecto
     hoy = date.today()
     lunes_hoy = str(hoy - timedelta(days=hoy.weekday()))
     val_default = lunes_hoy if any(s["value"] == lunes_hoy for s in semanas) else (semanas[0]["value"] if semanas else None)
-    return semanas, val_default, mes_opts
+    return semanas, val_default
 
 
 # ── Callback: Gantt dashboard ─────────────────────────────────────────────────
@@ -1899,93 +1811,168 @@ def actualizar_campana(_, fecha_str, __, lineas, estados, procesos, maquinas):
     )
     return kpis, tabla, linea_opts, proc_opts, maq_opts
 
-# ── Callback: Cumplimiento mensual por máquina ───────────────────────────────
+
+# ── Callback: Descargar cumplimiento semanal ──────────────────────────────────
 
 @app.callback(
-    Output("cumm-kpi-row",     "children"),
-    Output("cumm-tabla",       "children"),
-    Output("cumm-fil-mes",     "options"),
-    Output("cumm-fil-proceso", "options"),
-    Input("btn-cumm-refresh",  "n_clicks"),
-    Input("cum-subtabs",       "active_tab"),
-    Input("cumm-fil-mes",      "value"),
-    Input("cumm-fil-proceso",  "value"),
+    Output("cum-download", "data"),
+    Input("btn-cum-descargar", "n_clicks"),
+    State("cum-fil-semana",   "value"),
+    State("cum-fil-proceso",  "value"),
+    prevent_initial_call=True,
 )
-def actualizar_cumplimiento_mensual_maq(_, tab, mes_sel, procesos):
-    _meses_es = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio",
-                 "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
-    try:
-        import sqlite3 as _sq
-        _con = _sq.connect(DB_PATH)
-        _meses = pd.read_sql("SELECT DISTINCT Mes FROM ordenes_plan WHERE Mes > 0", _con)["Mes"].dropna().astype(int).tolist()
-        _con.close()
-        mes_opts = [{"label": _meses_es[m], "value": m} for m in sorted(_meses) if 1 <= m <= 12]
-    except Exception:
-        mes_opts = []
+def descargar_cumplimiento_semanal(n, semana_str, procesos):
+    if not semana_str:
+        return None
 
-    # Default al mes actual
-    if not mes_sel:
-        hoy = date.today()
-        mes_sel = hoy.month
-        if not any(o["value"] == mes_sel for o in mes_opts) and mes_opts:
-            mes_sel = mes_opts[-1]["value"]
+    from datetime import date, timedelta
+    import sqlite3 as _sq
+    import io
+    from openpyxl import Workbook
+    from db import es_habil as es_habil
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
-    df = get_cumplimiento_mensual_maquina(DB_PATH, EXCEL_PLAN, int(mes_sel), date.today())
+    # Calcular rango de la semana
+    lunes_sem  = date.fromisoformat(semana_str)
+    viernes_sem = lunes_sem + timedelta(days=4)
+    semana_num  = lunes_sem.isocalendar()[1]
 
-    proc_opts = []
-    if not df.empty and "Proceso" in df.columns:
-        proc_opts = [{"label":p,"value":p} for p in sorted(df["Proceso"].dropna().unique()) if p]
+    # Obtener todas las órdenes
+    con = _sq.connect(DB_PATH)
+    df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
 
-    if df.empty:
-        return [], dbc.Alert("Sin datos para este mes.", color="info"), mes_opts, proc_opts
+    # Avance real de la semana
+    df_av = pd.read_sql(
+        "SELECT BELNR_ID, SUM(Cantidad_Real) as real_sem FROM avance_real "
+        "WHERE Fecha >= ? AND Fecha <= ? GROUP BY BELNR_ID",
+        con, params=[str(lunes_sem), str(viernes_sem)])
+    con.close()
+
+    av_map = dict(zip(df_av["BELNR_ID"].astype(int), df_av["real_sem"].fillna(0)))
+
+    # Filtrar OPs activas en la semana
+    df_sem = df_plan[
+        (df_plan["Fecha_Inicio"] <= str(viernes_sem)) &
+        (df_plan["Fecha_Fin"]    >= str(lunes_sem))
+    ].reset_index(drop=True)
 
     if procesos:
-        df = df[df["Proceso"].isin(procesos)]
+        df_sem = df_sem[df_sem["Proceso"].isin(procesos)]
 
-    if df.empty:
-        return [], dbc.Alert("Sin datos para este filtro.", color="info"), mes_opts, proc_opts
+    rows = []
+    for _, row in df_sem.iterrows():
+        f_ini_op = date.fromisoformat(str(row["Fecha_Inicio"])[:10])
+        f_fin_op = date.fromisoformat(str(row["Fecha_Fin"])[:10])
+        cap      = float(row["Cap_Diaria"])
+        planif   = float(row["Planificado"])
 
-    plan_total = df["Plan_Mes"].sum()
-    real_total = df["Real_Mes"].sum()
-    pct_total  = round(real_total / plan_total * 100, 1) if plan_total > 0 else 0
-    col = "success" if pct_total >= 90 else "warning" if pct_total >= 70 else "danger"
+        inicio_sem = max(f_ini_op, lunes_sem)
+        fin_sem    = min(f_fin_op, viernes_sem)
 
-    kpis = dbc.Row([
-        dbc.Col(make_kpi(f"Cumplimiento {_meses_es[int(mes_sel)]}", f"{pct_total}%", "", col), width=3),
-        dbc.Col(make_kpi("Plan mes",  fmt_num(plan_total), "unidades", "info"),    width=3),
-        dbc.Col(make_kpi("Real mes",  fmt_num(real_total), "unidades", "primary"), width=3),
-        dbc.Col(make_kpi("Máquinas",  str(len(df)), "en el filtro"),               width=3),
-    ], className="g-2")
+        # Acum antes de la semana
+        acum_prev = 0.0
+        d = f_ini_op
+        while d < inicio_sem:
+            if es_habil(d):
+                acum_prev += min(cap, max(planif - acum_prev, 0))
+            d += timedelta(days=1)
 
-    tabla = dash_table.DataTable(
-        columns=[
-            {"name":"Proceso",      "id":"Proceso"},
-            {"name":"Máquina",      "id":"Maquina"},
-            {"name":"Días plan",    "id":"Dias_Plan",  "type":"numeric","format":{"specifier":".2f"}},
-            {"name":"Cap. diaria",  "id":"Cap_Diaria", "type":"numeric","format":{"specifier":",.0f"}},
-            {"name":"Plan mes",     "id":"Plan_Mes",   "type":"numeric","format":{"specifier":",.0f"}},
-            {"name":"Real mes",     "id":"Real_Mes",   "type":"numeric","format":{"specifier":",.0f"}},
-            {"name":"% Cumpl.",     "id":"Pct",        "type":"numeric","format":{"specifier":".1f"}},
-        ],
-        data=df.to_dict("records"),
-        sort_action="native", filter_action="native", page_size=30,
-        style_table={"overflowX":"auto"},
-        style_header={"backgroundColor":"#1f3864","color":"white","fontWeight":"500",
-                      "fontSize":"11px","border":"0.5px solid #dee2e6","textAlign":"center"},
-        style_cell={"fontSize":"11px","padding":"6px 10px",
-                    "border":"0.5px solid #dee2e6","textAlign":"center"},
-        style_data_conditional=[
-            {"if":{"filter_query":"{Pct} >= 90"}, "backgroundColor":"#c6efce","color":"#1a7a4a"},
-            {"if":{"filter_query":"{Pct} >= 70 && {Pct} < 90"}, "backgroundColor":"#ffeb9c","color":"#854F0B"},
-            {"if":{"filter_query":"{Pct} < 70"}, "backgroundColor":"#ffc7ce","color":"#A32D2D"},
-        ],
-        style_cell_conditional=[
-            {"if":{"column_id":"Plan_Mes"},  "fontWeight":"500","color":"#0C447C"},
-            {"if":{"column_id":"Real_Mes"},  "fontWeight":"500","color":"#1a7a4a"},
-            {"if":{"column_id":"Pct"},       "fontWeight":"700"},
-        ],
-    )
-    return kpis, tabla, mes_opts, proc_opts
+        # Plan semana
+        plan_sem = 0.0
+        d = inicio_sem
+        while d <= fin_sem:
+            if es_habil(d):
+                dia_plan  = min(cap, max(planif - acum_prev, 0))
+                plan_sem  += dia_plan
+                acum_prev += dia_plan
+            d += timedelta(days=1)
+
+        real_sem = float(av_map.get(int(row["BELNR_ID"]), 0))
+        pct      = round(real_sem / plan_sem * 100, 1) if plan_sem > 0 else 0
+
+        rows.append({
+            "Semana":       semana_num,
+            "Lunes":        lunes_sem.strftime("%d/%m/%Y"),
+            "Viernes":      viernes_sem.strftime("%d/%m/%Y"),
+            "O. Prod.":     int(row["BELNR_ID"]),
+            "Mes":          int(row.get("Mes", 0)),
+            "Máquina":      row["Maquina"],
+            "Proceso":      row["Proceso"],
+            "Sec":          int(row["Sec"]),
+            "Código":       row["ItemCode"],
+            "Descripción":  row["Descripcion"],
+            "Planificado":  round(planif),
+            "Cap. diaria":  round(cap),
+            "Plan semana":  round(plan_sem),
+            "Real semana":  round(real_sem),
+            "% Cumpl.":     pct,
+        })
+
+    if not rows:
+        return None
+
+    df_out = pd.DataFrame(rows)
+
+    # Generar Excel en memoria
+    s = Side(style="thin", color="BFBFBF")
+    brd = Border(left=s, right=s, top=s, bottom=s)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Semana {semana_num}"
+
+    cols = [
+        ("Semana",7),("Lunes",10),("Viernes",10),("O. Prod.",9),("Mes",5),
+        ("Máquina",9),("Proceso",14),("Sec",5),("Código",14),
+        ("Descripción",40),("Planificado",14),("Cap. diaria",13),
+        ("Plan semana",14),("Real semana",14),("% Cumpl.",10),
+    ]
+
+    ws.merge_cells(f"A1:{get_column_letter(len(cols))}1")
+    ws["A1"] = f"Cumplimiento Semana {semana_num} — {lunes_sem.strftime('%d/%m')} al {viernes_sem.strftime('%d/%m/%Y')}"
+    ws["A1"].font      = Font(bold=True, color="FFFFFF", size=12)
+    ws["A1"].fill      = PatternFill("solid", fgColor="2F5496")
+    ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 22
+
+    for c_idx, (col_name, ancho) in enumerate(cols, 1):
+        cell = ws.cell(2, c_idx, col_name)
+        cell.font      = Font(bold=True, color="FFFFFF", size=9)
+        cell.fill      = PatternFill("solid", fgColor="1F3864")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = brd
+        ws.column_dimensions[get_column_letter(c_idx)].width = ancho
+    ws.row_dimensions[2].height = 28
+
+    for fi, (_, row) in enumerate(df_out.iterrows(), 3):
+        vals = [row[c[0]] for c in cols]
+        for c_idx, val in enumerate(vals, 1):
+            cell = ws.cell(fi, c_idx, val)
+            cell.border    = brd
+            cell.font      = Font(size=9)
+            cell.alignment = Alignment(
+                horizontal="left" if c_idx == 10 else "center",
+                vertical="center")
+            if c_idx in (11, 12, 13, 14):
+                cell.number_format = "#,##0"
+            if c_idx == 15:
+                cell.number_format = "0.0"
+                pct_val = float(val) if val else 0
+                if   pct_val >= 90: cell.fill = PatternFill("solid", fgColor="C6EFCE")
+                elif pct_val >= 70: cell.fill = PatternFill("solid", fgColor="FFEB9C")
+                else:               cell.fill = PatternFill("solid", fgColor="FFC7CE")
+        ws.row_dimensions[fi].height = 15
+
+    ws.freeze_panes = "A3"
+
+    # Guardar en buffer
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    nombre = f"Cumplimiento_Semana{semana_num}_{lunes_sem.strftime('%d%m')}.xlsx"
+    return dcc.send_bytes(buf.read(), nombre)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
