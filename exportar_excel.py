@@ -26,6 +26,20 @@ C_AMARILLO = "FFEB9C"
 C_ROJO     = "FFC7CE"
 C_GRIS     = "EDEDED"
 C_FUERA    = "F2F2F2"
+C_FERIADO  = "FF9999"
+C_MANT     = "90EE90"
+
+PROCESO_ALIAS = {
+    "Masas y Tintas":    "M&T",
+    "MASAS_TINTAS_LIMA": "M&T",
+    "Semiterminado":     "Semi",
+    "Terminado":         "Terminado",
+    "ENSAMBLE_LIMA":     "Ens",
+    "PLÁSTICO_LIMA":     "Plásticos",
+}
+
+MESES_ES = ["","Enero","Febrero","Marzo","Abril","Mayo","Junio",
+            "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
 
 
 def fill(hex_color):
@@ -46,17 +60,15 @@ def dias_habiles_rango(desde: date, hasta: date):
     return dias
 
 
-PROCESO_ALIAS = {
-    "Masas y Tintas": "M&T",
-    "Semiterminado":  "Semi",
-    "Terminado":      "Terminado",
-}
-
 def nombre_hoja(prefix: str, proceso: str) -> str:
     """Nombre de hoja válido para Excel (max 31 chars)."""
-    alias = PROCESO_ALIAS.get(proceso, proceso)
+    alias  = PROCESO_ALIAS.get(proceso, proceso)
     nombre = f"{prefix} {alias}"
     return nombre[:31]
+
+def salida_mes(mes: int) -> str:
+    mes_nombre = MESES_ES[mes] if 1 <= mes <= 12 else str(mes)
+    return f"MPS_Reporte_{mes_nombre}.xlsx"
 
 
 # ── Hoja Plan ─────────────────────────────────────────────────────────────────
@@ -120,9 +132,20 @@ def escribir_hoja_plan(ws, df: pd.DataFrame, proceso: str):
 def escribir_hoja_gantt(ws, df: pd.DataFrame, df_ingresos: pd.DataFrame,
                         proceso: str, desde: date, hasta: date, linea: str = None):
     from db import es_habil
-    dias = [d for d in (desde + timedelta(days=i)
-                        for i in range((hasta - desde).days + 1))
-            if es_habil(d)]
+    # Días hábiles + sábados con producción real
+    dias_base = [d for d in (desde + timedelta(days=i)
+                             for i in range((hasta - desde).days + 1))
+                 if es_habil(d)]
+    sabados_real = set()
+    if not df_ingresos.empty and "Fecha" in df_ingresos.columns:
+        for f_str in df_ingresos["Fecha"].dropna().unique():
+            try:
+                f = date.fromisoformat(str(f_str)[:10])
+                if desde <= f <= hasta and f.weekday() == 5:
+                    sabados_real.add(f)
+            except Exception:
+                pass
+    dias = sorted(set(dias_base) | sabados_real)
     if not dias:
         ws["A1"] = "Sin días hábiles en el rango."
         return
@@ -202,6 +225,16 @@ def escribir_hoja_gantt(ws, df: pd.DataFrame, df_ingresos: pd.DataFrame,
             # Real del día (puede existir aunque sea fuera del rango teórico)
             real_dia = ingr_dia.get((belnr, dia.strftime("%Y-%m-%d")), None)
 
+            # Sábado: solo real si hay, sin plan
+            if dia.weekday() == 5:
+                if real_dia is not None:
+                    acum_real += real_dia
+                    cell.value = "R:" + f"{int(real_dia):,}" + "\nA:" + f"{int(acum_real):,}"
+                    cell.fill  = fill("BDD7EE")  # azul claro
+                else:
+                    cell.fill = fill(C_FUERA)
+                continue
+
             if dia < f_inicio:
                 cell.fill = fill(C_FUERA)
                 continue
@@ -259,8 +292,8 @@ def escribir_hoja_gantt(ws, df: pd.DataFrame, df_ingresos: pd.DataFrame,
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--desde", default=None)
-    parser.add_argument("--hasta", default=None)
+    parser.add_argument("--mes", type=int, default=None,
+                        help="Mes a exportar (4=Abril, 5=Mayo, etc.)")
     args = parser.parse_args()
 
     init_db(DB_PATH)
@@ -274,51 +307,54 @@ def main():
         print("❌ No hay órdenes en el plan.")
         return
 
-    fecha_min = date.fromisoformat(df_plan["Fecha_Inicio"].min()[:10])
-    fecha_max = date.fromisoformat(df_plan["Fecha_Fin"].max()[:10])
-    desde = date.fromisoformat(args.desde) if args.desde else fecha_min
-    hasta = date.fromisoformat(args.hasta) if args.hasta else fecha_max
+    # Meses a exportar
+    if "Mes" in df_plan.columns and df_plan["Mes"].notna().any():
+        meses_disp = sorted(df_plan["Mes"].dropna().unique().astype(int))
+    else:
+        meses_disp = [0]
 
-    print(f"📅 Rango: {desde} → {hasta}")
+    meses_exportar = [args.mes] if args.mes else meses_disp
 
-    wb = Workbook()
-    wb.remove(wb.active)  # eliminar hoja vacía por defecto
+    for mes in meses_exportar:
+        salida = salida_mes(mes) if mes else SALIDA
+        mes_nombre = MESES_ES[mes] if mes and 1 <= mes <= 12 else ""
+        print(f"\n📅 Generando {salida}...")
 
-    # Agrupar por Mes+Proceso para generar hojas separadas por mes
-    meses = sorted(df_plan["Mes"].dropna().unique().astype(int)) if "Mes" in df_plan.columns else [0]
-
-    procesos = sorted(df_plan["Proceso"].unique())
-    for proceso in procesos:
-        df_proc_full = df_plan[df_plan["Proceso"] == proceso].reset_index(drop=True)
-
-        # Si hay columna Mes, generar una hoja por mes
-        if "Mes" in df_plan.columns and df_plan["Mes"].notna().any():
-            meses_proc = sorted(df_proc_full["Mes"].dropna().unique().astype(int))
-            for mes in meses_proc:
-                df_proc = df_proc_full[df_proc_full["Mes"].astype(int) == mes].reset_index(drop=True)
-                if df_proc.empty:
-                    continue
-                alias_proc = PROCESO_ALIAS.get(proceso, proceso)
-                suffix = f"M{mes}"
-                print(f"  → {proceso} Mes {mes}: {len(df_proc)} órdenes")
-
-                ws_plan = wb.create_sheet(title=f"Plan {alias_proc} {suffix}"[:31])
-                escribir_hoja_plan(ws_plan, df_proc, f"{proceso} — Mes {mes}")
-
-                # Rango de fechas del mes
-                f_ini_mes = date.fromisoformat(df_proc["Fecha_Inicio"].min()[:10])
-                f_fin_mes = date.fromisoformat(df_proc["Fecha_Fin"].max()[:10])
-                ws_gantt = wb.create_sheet(title=f"Gantt {alias_proc} {suffix}"[:31])
-                escribir_hoja_gantt(ws_gantt, df_proc, df_ingresos, f"{proceso} — Mes {mes}", f_ini_mes, f_fin_mes)
+        # Filtrar por mes
+        if mes and "Mes" in df_plan.columns:
+            df_mes = df_plan[df_plan["Mes"].astype(int) == mes].reset_index(drop=True)
         else:
-            print(f"  → {proceso}: {len(df_proc_full)} órdenes")
+            df_mes = df_plan
+
+        if df_mes.empty:
+            print(f"  ⚠️  Sin órdenes para mes {mes}")
+            continue
+
+        wb = Workbook()
+        wb.remove(wb.active)
+
+        procesos = sorted(df_mes["Proceso"].unique())
+        for proceso in procesos:
+            df_proc = df_mes[df_mes["Proceso"] == proceso].reset_index(drop=True)
+            if df_proc.empty:
+                continue
+            print(f"  → {proceso}: {len(df_proc)} órdenes")
+
+            f_ini = date.fromisoformat(df_proc["Fecha_Inicio"].min()[:10])
+            f_fin = date.fromisoformat(df_proc["Fecha_Fin"].max()[:10])
+
             ws_plan = wb.create_sheet(title=nombre_hoja("Plan", proceso))
-            escribir_hoja_plan(ws_plan, df_proc_full, proceso)
+            escribir_hoja_plan(ws_plan, df_proc, f"{proceso} — {mes_nombre}")
+
             ws_gantt = wb.create_sheet(title=nombre_hoja("Gantt", proceso))
-            escribir_hoja_gantt(ws_gantt, df_proc_full, df_ingresos, proceso, desde, hasta)
+            escribir_hoja_gantt(ws_gantt, df_proc, df_ingresos,
+                                f"{proceso} — {mes_nombre}", f_ini, f_fin)
+
+        wb.save(salida)
+        print(f"✅ Guardado: {salida} ({len(procesos)*2} hojas)")
 
     wb.save(SALIDA)
-    print(f"✅ Guardado: {SALIDA}")
+    print(f"✅ Guardado: {SALIDA} ({len(procesos)*2 + 1} hojas)")
 
 
 if __name__ == "__main__":

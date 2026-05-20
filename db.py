@@ -189,7 +189,22 @@ def cargar_plan_desde_excel(db_path: str, excel_path: str):
     _usar_fechas = False
     if os.path.exists(FECHAS_EXCEL):
         try:
-            df_fc = pd.read_excel(FECHAS_EXCEL, sheet_name="Fechas", dtype={"ItemCode": str})
+            df_fc = pd.read_excel(FECHAS_EXCEL, sheet_name="Fechas", dtype={"ItemCode": str}, header=1)
+            df_fc.columns = df_fc.columns.str.strip()
+            df_fc = df_fc.rename(columns={
+                "O. Prod.":      "BELNR_ID",
+                "Hora Ini.":     "Hora_Inicio",
+                "Fecha Gantt":   "Fecha_Gantt_Desde",
+                "Fecha Inicio":  "Fecha_Inicio",
+                "Fecha Fin":     "Fecha_Fin",
+                "Hora Fin":      "Hora_Fin",
+                "Cap. diaria":   "Cap_Diaria",
+                "Dur.(hs)":      "Duracion_Horas",
+                "Estado":        "Estado_OP",
+                "Avance SAP":    "Avance_SAP",
+                "Fecha Conta":   "Fecha_Conta",
+                "Hs. Prog.":     "Horas_Prog",
+            })
             df_fc["BELNR_ID"] = df_fc["BELNR_ID"].astype(int)
             cols_fc = [c for c in ["BELNR_ID","Fecha_Inicio","Hora_Inicio","Fecha_Fin","Hora_Fin",
                                     "Cap_Diaria","Duracion_Horas","Estado_OP","Avance_SAP",
@@ -317,6 +332,10 @@ def get_ordenes_activas_en_dia(db_path: str, fecha: date) -> pd.DataFrame:
               -- OP vencida pero no completada
               p.Fecha_Fin < :fecha
               AND COALESCE(acum.total_real, 0) < p.Planificado
+            )
+            OR (
+              -- OP CERRADA/COMPLETADA — mostrar siempre para historial
+              COALESCE(p.Estado_OP, 'ABIERTO') = 'CERRADO'
             )
           )
           AND (
@@ -467,9 +486,6 @@ def cargar_bom_stock(db_path: str, excel_path: str):
             print("  ⚠️  No se encontró hoja Stock")
             return
     stk.columns = stk.columns.str.strip()
-    # Renombrar columna ItemCode si viene como Unnamed: 0
-    if "Unnamed: 0" in stk.columns and "ItemCode" not in stk.columns:
-        stk = stk.rename(columns={"Unnamed: 0": "ItemCode"})
     stk = stk.rename(columns={
         "Número de artículo":   "ItemCode",
         "Descripción del artículo": "Descripcion",
@@ -1405,99 +1421,3 @@ def get_avance_campana_bom(db_path: str, excel_path: str) -> pd.DataFrame:
     df_bom["Pct_Avance"] = (df_bom["Avance"] / df_bom[cant_col] * 100).round(1).clip(upper=100).fillna(0)
 
     return df_bom
-
-
-def get_cumplimiento_mensual_maquina(db_path: str, excel_path: str,
-                                     mes: int, fecha_ref: date = None) -> pd.DataFrame:
-    """
-    Cumplimiento mensual por máquina.
-    Plan = Dias_Planificados × Cap_Diaria (de Calendario_Maquinas o calculado)
-    Real = suma avance_real del mes
-    """
-    if fecha_ref is None:
-        fecha_ref = date.today()
-
-    # Leer Calendario_Maquinas
-    try:
-        df_cal = pd.read_excel(excel_path, sheet_name="Calendario_Maquinas")
-        df_cal.columns = df_cal.columns.str.strip().str.rstrip(":").str.strip()
-        df_cal = df_cal.rename(columns={"Máquina": "Maquina"})
-        df_cal = df_cal.dropna(subset=["Mes","Maquina"])
-        df_cal["Mes"] = df_cal["Mes"].astype(int)
-        # Buscar columna días — normalizar nombres quitando espacios y dos puntos
-        col_map = {c.strip().rstrip(":").strip(): c for c in df_cal.columns}
-        col_dias = None
-        for nombre in ["Días Planificados", "Dias_Planificados", "Dias Planificados"]:
-            if nombre in col_map:
-                col_dias = col_map[nombre]
-                break
-        if col_dias:
-            df_cal["Dias_Plan"] = pd.to_numeric(df_cal[col_dias], errors="coerce").fillna(0)
-        elif "Horas Planificadas" in df_cal.columns:
-            df_cal["Dias_Plan"] = pd.to_numeric(df_cal["Horas Planificadas"], errors="coerce").fillna(0) / 24
-        else:
-            df_cal["Dias_Plan"] = 0
-        df_cal = df_cal[df_cal["Mes"] == mes][["Maquina","Dias_Plan"]]
-    except Exception as e:
-        print(f"  Warning Calendario_Maquinas: {e}")
-        df_cal = pd.DataFrame(columns=["Maquina","Dias_Plan"])
-
-    # Ordenes del mes
-    con = sqlite3.connect(db_path)
-    df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
-
-    import calendar as _cal
-    primer_dia = date(fecha_ref.year, mes, 1)
-    ultimo_dia = date(fecha_ref.year, mes, _cal.monthrange(fecha_ref.year, mes)[1])
-    hasta = min(fecha_ref, ultimo_dia)
-
-    df_av = pd.read_sql(
-        "SELECT BELNR_ID, SUM(Cantidad_Real) as real_mes FROM avance_real "
-        "WHERE Fecha >= ? AND Fecha <= ? GROUP BY BELNR_ID",
-        con, params=[str(primer_dia), str(hasta)])
-    con.close()
-
-    # Filtrar plan por mes
-    if "Mes" in df_plan.columns and df_plan["Mes"].notna().any():
-        df_plan = df_plan[df_plan["Mes"].astype(str).str.strip() == str(mes)]
-
-    if df_plan.empty:
-        return pd.DataFrame()
-
-    df_plan = df_plan.merge(df_av, on="BELNR_ID", how="left")
-    df_plan["real_mes"] = df_plan["real_mes"].fillna(0)
-
-    resultado = []
-    for maquina, grp in df_plan.groupby("Maquina"):
-        proceso_v  = grp["Proceso"].iloc[0] if "Proceso" in grp.columns else ""
-        cap_diaria = float(grp["Cap_Diaria"].max())
-        real_mes   = float(grp["real_mes"].sum())
-
-        cal_row = df_cal[df_cal["Maquina"] == maquina]
-        if not cal_row.empty and float(cal_row["Dias_Plan"].iloc[0]) > 0:
-            dias_plan = float(cal_row["Dias_Plan"].iloc[0])
-        else:
-            dias_plan = 0
-            d = primer_dia
-            while d <= ultimo_dia:
-                if es_habil(d):
-                    dias_plan += 1
-                d += timedelta(days=1)
-
-        plan_mes = round(dias_plan * cap_diaria)
-        pct      = round(real_mes / plan_mes * 100, 1) if plan_mes > 0 else 0
-
-        resultado.append({
-            "Proceso":    proceso_v,
-            "Maquina":    maquina,
-            "Dias_Plan":  dias_plan,
-            "Cap_Diaria": round(cap_diaria),
-            "Plan_Mes":   plan_mes,
-            "Real_Mes":   round(real_mes),
-            "Pct":        pct,
-        })
-
-    df = pd.DataFrame(resultado)
-    if df.empty:
-        return df
-    return df.sort_values(["Proceso","Maquina"]).reset_index(drop=True)

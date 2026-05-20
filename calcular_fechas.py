@@ -212,8 +212,13 @@ def calcular_fechas(excel_path: str) -> pd.DataFrame:
                     hp, maquina)
                 dt_fin = sumar_horas_habiles(dt_inicio, duracion, hp, maquina)
             else:
-                dt_inicio = cursor
-                dt_fin    = sumar_horas_habiles(cursor, duracion, hp, maquina)
+                # Si la fecha del Excel es posterior al cursor, respetar la del Excel
+                f_base = row["Fecha_Inicio_Base"]
+                fecha_excel = siguiente_momento_habil(
+                    datetime(f_base.year, f_base.month, f_base.day, HORA_INICIO),
+                    hp, maquina)
+                dt_inicio = max(cursor, fecha_excel)
+                dt_fin    = sumar_horas_habiles(dt_inicio, duracion, hp, maquina)
                 cursor    = dt_fin
 
             registros.append({

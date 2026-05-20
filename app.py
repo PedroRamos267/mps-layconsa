@@ -322,30 +322,48 @@ def build_layout():
             # ── PESTAÑA CUMPLIMIENTO ────────────────────────────────────────────
             dbc.Tab(label="📈 Cumplimiento del programa", tab_id="tab-cum", children=[
                 html.Div(className="mt-3", children=[
-                    dbc.Row([
-                        dbc.Col([
-                            dcc.Dropdown(id="cum-fil-semana", placeholder="Semana",
-                                         style={"fontSize":"13px"}),
-                        ], width=3),
-                        dbc.Col([
-                            dcc.Dropdown(id="cum-fil-proceso", placeholder="Proceso",
-                                         multi=True, style={"fontSize":"13px"}),
-                        ], width=3),
-                        dbc.Col([
-                            dbc.Button("🔄 Actualizar", id="btn-cum-refresh",
-                                       color="secondary", size="sm", outline=True,
-                                       className="me-2"),
-                            dbc.Button("⬇️ Descargar semana", id="btn-cum-descargar",
-                                       color="success", size="sm", outline=True),
-                            dcc.Download(id="cum-download"),
-                        ], width=6, className="d-flex align-items-center justify-content-end gap-2"),
-                    ], className="mb-3 g-2"),
-                    dbc.Row(id="cum-kpi-row", className="mb-3 g-2"),
-                    dbc.Row([
-                        dbc.Col(html.Div(id="cum-panel-dias"),  width=7),
-                        dbc.Col(html.Div(id="cum-panel-proc"),  width=5),
-                    ], className="mb-3 g-2"),
-                    html.Div(id="cum-tabla"),
+                    dbc.Tabs([
+                        dbc.Tab(label="📅 Semanal", tab_id="cum-sub-semanal", children=[
+                            html.Div(className="mt-3", children=[
+                                dbc.Row([
+                                    dbc.Col([
+                                        dcc.Dropdown(id="cum-fil-semana", placeholder="Semana",
+                                                     multi=True, style={"fontSize":"13px"}),
+                                    ], width=3),
+                                    dbc.Col([
+                                        dcc.Dropdown(id="cum-fil-proceso", placeholder="Proceso",
+                                                     multi=True, style={"fontSize":"13px"}),
+                                    ], width=3),
+                                    dbc.Col([
+                                        dbc.Button("🔄 Actualizar", id="btn-cum-refresh",
+                                                   color="secondary", size="sm", outline=True,
+                                                   className="me-2"),
+                                        dbc.Button("⬇️ Descargar semana", id="btn-cum-descargar",
+                                                   color="success", size="sm", outline=True),
+                                        dcc.Download(id="cum-download"),
+                                    ], width=6, className="d-flex align-items-center justify-content-end gap-2"),
+                                ], className="mb-3 g-2"),
+                                dbc.Row(id="cum-kpi-row", className="mb-3 g-2"),
+                                dbc.Row([
+                                    dbc.Col(html.Div(id="cum-panel-dias"),  width=7),
+                                    dbc.Col(html.Div(id="cum-panel-proc"),  width=5),
+                                ], className="mb-3 g-2"),
+                                html.Div(id="cum-tabla"),
+                            ]),
+                        ]),
+                        dbc.Tab(label="📊 Resumen Campaña", tab_id="cum-sub-campana", children=[
+                            html.Div(className="mt-3", children=[
+                                dbc.Row([
+                                    dbc.Col([dcc.Dropdown(id="cumres-fil-proceso", placeholder="Proceso", multi=True, style={"fontSize":"13px"})], width=3),
+                                    dbc.Col([dcc.Dropdown(id="cumres-fil-linea", placeholder="Línea", multi=True, style={"fontSize":"13px"})], width=2),
+                                    dbc.Col([dcc.Dropdown(id="cumres-fil-sub", placeholder="Subcomponente", multi=True, style={"fontSize":"13px"})], width=3),
+                                    dbc.Col([dbc.Button("🔄 Actualizar", id="btn-cumres-refresh", color="secondary", size="sm", outline=True, className="float-end")], width=4),
+                                ], className="mb-3 g-2"),
+                                html.Div(id="cumres-graficos", className="mb-4"),
+                                html.Div(id="cumres-tabla"),
+                            ]),
+                        ]),
+                    ], id="cum-subtabs", active_tab="cum-sub-semanal"),
                 ]),
             ]),
 
@@ -437,25 +455,36 @@ def actualizar_mps(fecha_str, procesos, maquinas, estados, _):
 
     proc_opts = [{"label": p, "value": p} for p in sorted(df["Proceso"].unique())]
     maq_opts  = [{"label": m, "value": m} for m in sorted(df["Maquina"].unique())]
-    op_opts   = [
+    # Excluir CERRADAS/COMPLETADAS del dropdown de registro
+    df_reg = df[df.get("Estado_OP", pd.Series(["ABIERTO"]*len(df))).str.upper().ne("CERRADO")] if "Estado_OP" in df.columns else df
+    op_opts = [
         {"label": f"{int(r.BELNR_ID)} – {r.Maquina} – {r.Descripcion[:30]}",
          "value": r.BELNR_ID}
-        for _, r in df.iterrows()
+        for _, r in df_reg.iterrows()
     ]
 
     df["pct_dia"]  = (df["Real_Dia"] / df["Plan_Dia"] * 100).round(1).fillna(0).clip(upper=100)
     df["pct_acum"] = (df["Acumulado_Real"] / df["Planificado"] * 100).round(1).fillna(0)
 
-    def clasif(p):
+    def clasif(p, estado_op="ABIERTO"):
+        if str(estado_op).upper() == "CERRADO": return "completado"
         if p == 0:   return "pend"
         if p >= 100: return "ok"
         if p >= 75:  return "warn"
         return "bad"
 
-    df["Estado"] = df["pct_dia"].apply(clasif)
+    # Aplicar clasif con Estado_OP
+    if "Estado_OP" in df.columns:
+        df["Estado"] = df.apply(lambda r: clasif(r["pct_dia"], r.get("Estado_OP","ABIERTO")), axis=1)
+    else:
+        df["Estado"] = df["pct_dia"].apply(clasif)
+
     df["Estado_label"] = df["Estado"].map({
-        "ok": "✅ Completado", "warn": "🟡 Parcial",
-        "bad": "🔴 Atrasado",  "pend": "⬜ Pendiente",
+        "ok":         "✅ Completado",
+        "completado": "✅ Completado",
+        "warn":       "🟡 Parcial",
+        "bad":        "🔴 Atrasado",
+        "pend":       "⬜ Pendiente",
     })
     df["Inicio"] = df["Fecha_Inicio"].str[5:].str.replace("-","/") + " " + df["Hora_Inicio"]
     df["Fin"]    = df["Fecha_Fin"].str[5:].str.replace("-","/")    + " " + df["Hora_Fin"]
@@ -482,7 +511,7 @@ def actualizar_mps(fecha_str, procesos, maquinas, estados, _):
                          "success" if gp >= 90 else "warning" if gp >= 70 else "danger"), width=3),
     ], className="g-2")
 
-    COLOR_MAP = {"ok":"#c6efce","warn":"#ffeb9c","bad":"#ffc7ce","pend":"#f8f9fa"}
+    COLOR_MAP = {"ok":"#c6efce","completado":"#c6efce","warn":"#ffeb9c","bad":"#ffc7ce","pend":"#f8f9fa"}
     tabla = dash_table.DataTable(
         id="tabla-mps",
         columns=[
@@ -1821,116 +1850,126 @@ def actualizar_campana(_, fecha_str, __, lineas, estados, procesos, maquinas):
     State("cum-fil-proceso",  "value"),
     prevent_initial_call=True,
 )
-def descargar_cumplimiento_semanal(n, semana_str, procesos):
-    if not semana_str:
+def descargar_cumplimiento_semanal(n, semana_vals, procesos):
+    if not semana_vals:
         return None
 
     from datetime import date, timedelta
     import sqlite3 as _sq
     import io
     from openpyxl import Workbook
-    from db import es_habil as es_habil
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
+    from db import es_habil as es_habil
 
-    # Calcular rango de la semana
-    lunes_sem  = date.fromisoformat(semana_str)
-    viernes_sem = lunes_sem + timedelta(days=4)
-    semana_num  = lunes_sem.isocalendar()[1]
+    # Normalizar a lista
+    if isinstance(semana_vals, str):
+        semana_vals = [semana_vals]
 
-    # Obtener todas las órdenes
     con = _sq.connect(DB_PATH)
     df_plan = pd.read_sql("SELECT * FROM ordenes_plan", con)
-
-    # Avance real de la semana
-    df_av = pd.read_sql(
-        "SELECT BELNR_ID, SUM(Cantidad_Real) as real_sem FROM avance_real "
-        "WHERE Fecha >= ? AND Fecha <= ? GROUP BY BELNR_ID",
-        con, params=[str(lunes_sem), str(viernes_sem)])
     con.close()
 
-    av_map = dict(zip(df_av["BELNR_ID"].astype(int), df_av["real_sem"].fillna(0)))
+    all_rows = []
+    for semana_str in sorted(semana_vals):
+        lunes_sem   = date.fromisoformat(semana_str)
+        viernes_sem = lunes_sem + timedelta(days=4)
+        semana_num  = lunes_sem.isocalendar()[1]
 
-    # Filtrar OPs activas en la semana
-    df_sem = df_plan[
-        (df_plan["Fecha_Inicio"] <= str(viernes_sem)) &
-        (df_plan["Fecha_Fin"]    >= str(lunes_sem))
-    ].reset_index(drop=True)
+        con = _sq.connect(DB_PATH)
+        df_av = pd.read_sql(
+            "SELECT BELNR_ID, SUM(Cantidad_Real) as real_sem FROM avance_real "
+            "WHERE Fecha >= ? AND Fecha <= ? GROUP BY BELNR_ID",
+            con, params=[str(lunes_sem), str(viernes_sem)])
+        df_acum = pd.read_sql(
+            "SELECT BELNR_ID, SUM(Cantidad_Real) as acum FROM avance_real "
+            "GROUP BY BELNR_ID", con)
+        con.close()
 
-    if procesos:
-        df_sem = df_sem[df_sem["Proceso"].isin(procesos)]
+        av_map   = dict(zip(df_av["BELNR_ID"].astype(int),   df_av["real_sem"].fillna(0)))
+        acum_map = dict(zip(df_acum["BELNR_ID"].astype(int), df_acum["acum"].fillna(0)))
 
-    rows = []
-    for _, row in df_sem.iterrows():
-        f_ini_op = date.fromisoformat(str(row["Fecha_Inicio"])[:10])
-        f_fin_op = date.fromisoformat(str(row["Fecha_Fin"])[:10])
-        cap      = float(row["Cap_Diaria"])
-        planif   = float(row["Planificado"])
+        df_sem = df_plan[
+            (df_plan["Fecha_Inicio"] <= str(viernes_sem)) &
+            (df_plan["Fecha_Fin"]    >= str(lunes_sem))
+        ].reset_index(drop=True)
 
-        inicio_sem = max(f_ini_op, lunes_sem)
-        fin_sem    = min(f_fin_op, viernes_sem)
+        if procesos:
+            df_sem = df_sem[df_sem["Proceso"].isin(procesos)]
 
-        # Acum antes de la semana
-        acum_prev = 0.0
-        d = f_ini_op
-        while d < inicio_sem:
-            if es_habil(d):
-                acum_prev += min(cap, max(planif - acum_prev, 0))
-            d += timedelta(days=1)
+        for _, row in df_sem.iterrows():
+            f_ini_op = date.fromisoformat(str(row["Fecha_Inicio"])[:10])
+            f_fin_op = date.fromisoformat(str(row["Fecha_Fin"])[:10])
+            cap      = float(row["Cap_Diaria"])
+            planif   = float(row["Planificado"])
 
-        # Plan semana
-        plan_sem = 0.0
-        d = inicio_sem
-        while d <= fin_sem:
-            if es_habil(d):
-                dia_plan  = min(cap, max(planif - acum_prev, 0))
-                plan_sem  += dia_plan
-                acum_prev += dia_plan
-            d += timedelta(days=1)
+            inicio_sem = max(f_ini_op, lunes_sem)
+            fin_sem    = min(f_fin_op, viernes_sem)
 
-        real_sem = float(av_map.get(int(row["BELNR_ID"]), 0))
-        pct      = round(real_sem / plan_sem * 100, 1) if plan_sem > 0 else 0
+            acum_prev = 0.0
+            d = f_ini_op
+            while d < inicio_sem:
+                if es_habil(d):
+                    acum_prev += min(cap, max(planif - acum_prev, 0))
+                d += timedelta(days=1)
 
-        rows.append({
-            "Semana":       semana_num,
-            "Lunes":        lunes_sem.strftime("%d/%m/%Y"),
-            "Viernes":      viernes_sem.strftime("%d/%m/%Y"),
-            "O. Prod.":     int(row["BELNR_ID"]),
-            "Mes":          int(row.get("Mes", 0)),
-            "Máquina":      row["Maquina"],
-            "Proceso":      row["Proceso"],
-            "Sec":          int(row["Sec"]),
-            "Código":       row["ItemCode"],
-            "Descripción":  row["Descripcion"],
-            "Planificado":  round(planif),
-            "Cap. diaria":  round(cap),
-            "Plan semana":  round(plan_sem),
-            "Real semana":  round(real_sem),
-            "% Cumpl.":     pct,
-        })
+            plan_sem = 0.0
+            d = inicio_sem
+            while d <= fin_sem:
+                if es_habil(d):
+                    dia_plan  = min(cap, max(planif - acum_prev, 0))
+                    plan_sem  += dia_plan
+                    acum_prev += dia_plan
+                d += timedelta(days=1)
 
-    if not rows:
+            real_sem   = float(av_map.get(int(row["BELNR_ID"]), 0))
+            acum_real  = float(acum_map.get(int(row["BELNR_ID"]), 0))
+            avance_sap = float(row.get("Avance_SAP", 0)) if "Avance_SAP" in row.index else 0
+            pct        = round(real_sem / plan_sem * 100, 1) if plan_sem > 0 else 0
+
+            all_rows.append({
+                "Semana":       semana_num,
+                "Lunes":        lunes_sem.strftime("%d/%m/%Y"),
+                "Viernes":      viernes_sem.strftime("%d/%m/%Y"),
+                "O. Prod.":     int(row["BELNR_ID"]),
+                "Mes":          int(row.get("Mes", 0)),
+                "Máquina":      row["Maquina"],
+                "Proceso":      row["Proceso"],
+                "Sec":          int(row["Sec"]),
+                "Código":       row["ItemCode"],
+                "Descripción":  row["Descripcion"],
+                "Planificado":  round(planif),
+                "Avance SAP":   round(avance_sap),
+                "Cap. diaria":  round(cap),
+                "Plan semana":  round(plan_sem),
+                "Real semana":  round(real_sem),
+                "Acum. real":   round(acum_real),
+                "% Cumpl.":     pct,
+            })
+
+    if not all_rows:
         return None
 
-    df_out = pd.DataFrame(rows)
+    df_out = pd.DataFrame(all_rows)
+    semanas_txt = "_".join([str(date.fromisoformat(s).isocalendar()[1]) for s in sorted(semana_vals)])
 
-    # Generar Excel en memoria
     s = Side(style="thin", color="BFBFBF")
     brd = Border(left=s, right=s, top=s, bottom=s)
 
     wb = Workbook()
     ws = wb.active
-    ws.title = f"Semana {semana_num}"
+    ws.title = f"Semanas {semanas_txt}"[:31]
 
     cols = [
         ("Semana",7),("Lunes",10),("Viernes",10),("O. Prod.",9),("Mes",5),
         ("Máquina",9),("Proceso",14),("Sec",5),("Código",14),
-        ("Descripción",40),("Planificado",14),("Cap. diaria",13),
-        ("Plan semana",14),("Real semana",14),("% Cumpl.",10),
+        ("Descripción",40),("Planificado",13),("Avance SAP",13),("Cap. diaria",13),
+        ("Plan semana",13),("Real semana",13),("Acum. real",13),("% Cumpl.",10),
     ]
 
     ws.merge_cells(f"A1:{get_column_letter(len(cols))}1")
-    ws["A1"] = f"Cumplimiento Semana {semana_num} — {lunes_sem.strftime('%d/%m')} al {viernes_sem.strftime('%d/%m/%Y')}"
+    sem_rango = f"Semanas {semanas_txt}"
+    ws["A1"] = f"Cumplimiento {sem_rango}"
     ws["A1"].font      = Font(bold=True, color="FFFFFF", size=12)
     ws["A1"].fill      = PatternFill("solid", fgColor="2F5496")
     ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
@@ -1954,9 +1993,9 @@ def descargar_cumplimiento_semanal(n, semana_str, procesos):
             cell.alignment = Alignment(
                 horizontal="left" if c_idx == 10 else "center",
                 vertical="center")
-            if c_idx in (11, 12, 13, 14):
+            if c_idx in (11, 12, 13, 14, 15, 16):
                 cell.number_format = "#,##0"
-            if c_idx == 15:
+            if c_idx == 17:
                 cell.number_format = "0.0"
                 pct_val = float(val) if val else 0
                 if   pct_val >= 90: cell.fill = PatternFill("solid", fgColor="C6EFCE")
@@ -1965,14 +2004,211 @@ def descargar_cumplimiento_semanal(n, semana_str, procesos):
         ws.row_dimensions[fi].height = 15
 
     ws.freeze_panes = "A3"
+    ws.auto_filter.ref = f"A2:{get_column_letter(len(cols))}{len(df_out)+2}"
 
-    # Guardar en buffer
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
 
-    nombre = f"Cumplimiento_Semana{semana_num}_{lunes_sem.strftime('%d%m')}.xlsx"
+    nombre = f"Cumplimiento_Semanas{semanas_txt}.xlsx"
     return dcc.send_bytes(buf.read(), nombre)
+
+
+
+# ── Callback: Resumen Campaña ejecutivo ──────────────────────────────────────
+
+@app.callback(
+    Output("cumres-graficos",   "children"),
+    Output("cumres-tabla",      "children"),
+    Output("cumres-fil-proceso","options"),
+    Output("cumres-fil-linea",  "options"),
+    Output("cumres-fil-sub",    "options"),
+    Input("btn-cumres-refresh", "n_clicks"),
+    Input("cum-subtabs",        "active_tab"),
+    Input("cumres-fil-proceso", "value"),
+    Input("cumres-fil-linea",   "value"),
+    Input("cumres-fil-sub",     "value"),
+)
+def actualizar_resumen_campana(_, tab, procesos, lineas, subs):
+    import plotly.graph_objects as go
+
+    try:
+        df = pd.read_excel(EXCEL_PLAN, sheet_name="Resumen_Campaña")
+        df.columns = df.columns.str.strip()
+    except Exception as e:
+        return dbc.Alert(f"No se encontró Resumen_Campaña: {e}", color="warning"), [], [], []
+
+    proc_opts  = [{"label":p,"value":p} for p in sorted(df["Proceso_Interno"].dropna().unique()) if p]
+    linea_opts = [{"label":l,"value":l} for l in sorted(df["Líneas"].dropna().unique()) if l]
+    sub_opts   = [{"label":s,"value":s} for s in sorted(df["Subcomponente"].dropna().unique()) if s]
+
+    if procesos: df = df[df["Proceso_Interno"].isin(procesos)]
+    if lineas:   df = df[df["Líneas"].isin(lineas)]
+    if subs:     df = df[df["Subcomponente"].isin(subs)]
+
+    if df.empty:
+        return dbc.Alert("Sin datos.", color="info"), [], proc_opts, linea_opts, sub_opts
+
+    cols_fijas = ["Proceso_Interno","Líneas","Subcomponente","Plan Campaña"]
+    cols_meses = [c for c in df.columns if c not in cols_fijas]
+    plan_cols  = [c for c in cols_meses if "Plan" in c]
+    real_cols  = [c for c in cols_meses if "Real" in c or "Real" in c.replace("(","")]
+
+    # Limpiar números
+    for c in cols_meses + (["Plan Campaña"] if "Plan Campaña" in df.columns else []):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    # Emparejar Plan con Real por mes (por posición)
+    meses    = []
+    plan_tot = []
+    real_tot = []
+    for pc, rc in zip(plan_cols, real_cols):
+        # Extraer nombre del mes del plan
+        mes = pc.split("(")[0].strip()
+        meses.append(mes)
+        plan_tot.append(int(df[pc].sum()))
+        real_tot.append(int(df[rc].sum()))
+
+    pct_meses = [round(r/p*100,1) if p>0 else 0 for r,p in zip(real_tot, plan_tot)]
+
+    gaps     = [p - r for p,r in zip(plan_tot, real_tot)]
+    gap_pcts = [round((p-r)/p*100,1) if p>0 else 0 for p,r in zip(plan_tot, real_tot)]
+
+    fig_bar = go.Figure()
+    fig_bar.add_trace(go.Bar(
+        name="Plan", x=meses, y=plan_tot,
+        marker_color="#1F3864",
+        text=[f"{v:,.0f}" for v in plan_tot],
+        textposition="inside", textfont=dict(size=10, color="white"),
+    ))
+    fig_bar.add_trace(go.Bar(
+        name="Real", x=meses, y=real_tot,
+        marker_color="#2E75B6",
+        text=[f"{v:,.0f}<br>✅ {p}%" for v,p in zip(real_tot, pct_meses)],
+        textposition="inside", textfont=dict(size=10, color="white"),
+    ))
+    fig_bar.add_trace(go.Bar(
+        name="Gap", x=meses, y=gaps,
+        marker_color="#FF6B6B",
+        text=[f"▼ {v:,.0f}<br>({g}%)" for v,g in zip(gaps, gap_pcts)],
+        textposition="outside", textfont=dict(size=10, color="#c00000"),
+        base=real_tot,
+        opacity=0.7,
+    ))
+    fig_bar.update_layout(
+        title=dict(text="Plan vs Real por Mes (con Gap)", font=dict(size=14, color="#1F3864")),
+        barmode="overlay", plot_bgcolor="white", paper_bgcolor="white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40,r=20,t=60,b=40), height=350,
+        yaxis=dict(tickformat=",.0f", gridcolor="#f0f0f0"),
+    )
+
+    # ── Gráfico 2: Dona — avance vs Plan Campaña ─────────────────────────────
+    plan_camp  = int(df["Plan Campaña"].sum()) if "Plan Campaña" in df.columns else 0
+    real_total = int(df[real_cols].sum().sum())
+    pct_camp   = round(real_total / plan_camp * 100, 1) if plan_camp > 0 else 0
+    pendiente  = max(plan_camp - real_total, 0)
+
+    fig_dona = go.Figure(go.Pie(
+        values=[real_total, pendiente],
+        labels=["Avance", "Pendiente"],
+        hole=0.65,
+        marker_colors=["#2E75B6", "#E9EFF7"],
+        textinfo="none",
+        hovertemplate="%{label}: %{value:,.0f}<extra></extra>",
+    ))
+    fig_dona.add_annotation(
+        text=f"<b>{pct_camp}%</b><br><span style='font-size:11px'>vs Campaña</span>",
+        x=0.5, y=0.5, showarrow=False,
+        font=dict(size=18, color="#1F3864"),
+        align="center",
+    )
+    fig_dona.update_layout(
+        title=dict(text="Avance vs Plan Campaña", font=dict(size=14, color="#1F3864")),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.1, xanchor="center", x=0.5),
+        margin=dict(l=20,r=20,t=60,b=40), height=320,
+        paper_bgcolor="white",
+    )
+
+    # ── Gráfico 3: Barras por Línea ───────────────────────────────────────────
+    if real_cols and plan_cols:
+        last_plan = plan_cols[-1] if plan_cols else None
+        last_real = real_cols[-1] if real_cols else None
+        df_linea = df.groupby("Líneas", as_index=False).agg(
+            Plan=(last_plan, "sum"),
+            Real=(last_real, "sum"),
+        )
+        df_linea = df_linea.sort_values("Plan", ascending=True)
+        df_linea["Pct"] = (df_linea["Real"]/df_linea["Plan"]*100).round(1).fillna(0)
+
+        fig_lin = go.Figure()
+        fig_lin.add_trace(go.Bar(
+            name="Plan", y=df_linea["Líneas"], x=df_linea["Plan"],
+            orientation="h", marker_color="#70AD47",
+        ))
+        fig_lin.add_trace(go.Bar(
+            name="Real", y=df_linea["Líneas"], x=df_linea["Real"],
+            orientation="h", marker_color="#A9D18E",
+            text=[f"{p}%" for p in df_linea["Pct"]],
+            textposition="outside", textfont=dict(size=9),
+        ))
+        fig_lin.update_layout(
+            title=dict(text=f"Último mes — Plan vs Real por Línea", font=dict(size=14, color="#1F3864")),
+            barmode="overlay", plot_bgcolor="white", paper_bgcolor="white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=100,r=60,t=60,b=40),
+            height=max(280, len(df_linea)*35 + 100),
+            xaxis=dict(tickformat=",.0f", gridcolor="#f0f0f0"),
+        )
+        grafico_linea = dcc.Graph(figure=fig_lin, config={"displayModeBar":False})
+    else:
+        grafico_linea = html.Div()
+
+    graficos = dbc.Row([
+        dbc.Col(dcc.Graph(figure=fig_bar, config={"displayModeBar":False}), width=8),
+        dbc.Col(dcc.Graph(figure=fig_dona, config={"displayModeBar":False}), width=4),
+        dbc.Col(grafico_linea, width=12, className="mt-3"),
+    ], className="g-2")
+
+    # ── Tabla detalle ─────────────────────────────────────────────────────────
+    dt_cols = [
+        {"name":"Proceso",       "id":"Proceso_Interno"},
+        {"name":"Línea",         "id":"Líneas"},
+        {"name":"Subcomponente", "id":"Subcomponente"},
+    ]
+    for c in cols_meses:
+        dt_cols.append({"name":c,"id":c,"type":"numeric","format":{"specifier":",.0f"}})
+    if "Plan Campaña" in df.columns:
+        dt_cols.append({"name":"Plan Campaña","id":"Plan Campaña","type":"numeric","format":{"specifier":",.0f"}})
+
+    style_cond = []
+    for pc, rc in zip(plan_cols, real_cols):
+        style_cond += [
+            {"if":{"filter_query":f"{{{rc}}} >= {{{pc}}} && {{{pc}}} > 0","column_id":rc},
+             "backgroundColor":"#c6efce","color":"#1a7a4a"},
+            {"if":{"filter_query":f"{{{rc}}} < {{{pc}}} && {{{pc}}} > 0","column_id":rc},
+             "backgroundColor":"#ffc7ce","color":"#A32D2D"},
+        ]
+
+    tabla = dash_table.DataTable(
+        columns=dt_cols,
+        data=df.to_dict("records"),
+        sort_action="native",
+        style_table={"overflowX":"auto"},
+        style_header={"backgroundColor":"#1F3864","color":"white","fontWeight":"500",
+                      "fontSize":"11px","border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_cell={"fontSize":"11px","padding":"5px 8px",
+                    "border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_data_conditional=style_cond,
+        style_cell_conditional=[
+            {"if":{"column_id":"Subcomponente"},"textAlign":"left"},
+            {"if":{"column_id":"Líneas"},        "textAlign":"left"},
+        ],
+        page_size=25,
+    )
+
+    return graficos, tabla, proc_opts, linea_opts, sub_opts
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
