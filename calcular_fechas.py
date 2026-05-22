@@ -194,8 +194,8 @@ def calcular_fechas(excel_path: str) -> pd.DataFrame:
         es_paralela = maquina in MAQUINAS_PARALELAS
 
         primera_fecha = grupo.loc[0, "Fecha_Inicio_Base"]
-        cursor = datetime(primera_fecha.year, primera_fecha.month,
-                          primera_fecha.day, HORA_INICIO)
+        cursor = datetime(int(primera_fecha.year), int(primera_fecha.month),
+                          int(primera_fecha.day), HORA_INICIO)
         cursor = siguiente_momento_habil(cursor, horas_prog, maquina)
 
         for _, row in grupo.iterrows():
