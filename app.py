@@ -2,6 +2,8 @@ import subprocess
 import sqlite3
 from datetime import date, timedelta
 import os
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
 
 import dash
 from dash.exceptions import PreventUpdate
@@ -354,11 +356,13 @@ def build_layout():
                         dbc.Tab(label="📊 Resumen Campaña", tab_id="cum-sub-campana", children=[
                             html.Div(className="mt-3", children=[
                                 dbc.Row([
-                                    dbc.Col([dcc.Dropdown(id="cumres-fil-proceso", placeholder="Proceso", multi=True, style={"fontSize":"13px"})], width=3),
+                                    dbc.Col([dcc.Dropdown(id="cumres-fil-semana", placeholder="Semana", multi=True, style={"fontSize":"13px"})], width=2),
+                                    dbc.Col([dcc.Dropdown(id="cumres-fil-mes", placeholder="Mes", style={"fontSize":"13px"})], width=2),
                                     dbc.Col([dcc.Dropdown(id="cumres-fil-linea", placeholder="Línea", multi=True, style={"fontSize":"13px"})], width=2),
-                                    dbc.Col([dcc.Dropdown(id="cumres-fil-sub", placeholder="Subcomponente", multi=True, style={"fontSize":"13px"})], width=3),
+                                    dbc.Col([dcc.Dropdown(id="cumres-fil-sub", placeholder="Subcomponente", multi=True, style={"fontSize":"13px"})], width=2),
                                     dbc.Col([dbc.Button("🔄 Actualizar", id="btn-cumres-refresh", color="secondary", size="sm", outline=True, className="float-end")], width=4),
                                 ], className="mb-3 g-2"),
+                                dbc.Row(id="cumres-kpi-row", className="mb-3 g-2"),
                                 html.Div(id="cumres-graficos", className="mb-4"),
                                 html.Div(id="cumres-tabla"),
                             ]),
@@ -2018,197 +2022,219 @@ def descargar_cumplimiento_semanal(n, semana_vals, procesos):
 # ── Callback: Resumen Campaña ejecutivo ──────────────────────────────────────
 
 @app.callback(
+    Output("cumres-kpi-row",    "children"),
     Output("cumres-graficos",   "children"),
     Output("cumres-tabla",      "children"),
-    Output("cumres-fil-proceso","options"),
+    Output("cumres-fil-semana", "options"),
+    Output("cumres-fil-mes",    "options"),
     Output("cumres-fil-linea",  "options"),
     Output("cumres-fil-sub",    "options"),
     Input("btn-cumres-refresh", "n_clicks"),
     Input("cum-subtabs",        "active_tab"),
-    Input("cumres-fil-proceso", "value"),
+    Input("cumres-fil-semana",  "value"),
+    Input("cumres-fil-mes",     "value"),
     Input("cumres-fil-linea",   "value"),
     Input("cumres-fil-sub",     "value"),
 )
-def actualizar_resumen_campana(_, tab, procesos, lineas, subs):
+def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs):
     import plotly.graph_objects as go
 
     try:
         df = pd.read_excel(EXCEL_PLAN, sheet_name="Resumen_Campaña")
         df.columns = df.columns.str.strip()
     except Exception as e:
-        return dbc.Alert(f"No se encontró Resumen_Campaña: {e}", color="warning"), [], [], []
+        empty = [[], dbc.Alert(f"No se encontró Resumen_Campaña: {e}", color="warning"), [], [], [], [], []]
+        return empty
 
-    proc_opts  = [{"label":p,"value":p} for p in sorted(df["Proceso_Interno"].dropna().unique()) if p]
-    linea_opts = [{"label":l,"value":l} for l in sorted(df["Líneas"].dropna().unique()) if l]
-    sub_opts   = [{"label":s,"value":s} for s in sorted(df["Subcomponente"].dropna().unique()) if s]
-
-    if procesos: df = df[df["Proceso_Interno"].isin(procesos)]
-    if lineas:   df = df[df["Líneas"].isin(lineas)]
-    if subs:     df = df[df["Subcomponente"].isin(subs)]
-
-    if df.empty:
-        return dbc.Alert("Sin datos.", color="info"), [], proc_opts, linea_opts, sub_opts
-
-    cols_fijas = ["Proceso_Interno","Líneas","Subcomponente","Plan Campaña"]
-    cols_meses = [c for c in df.columns if c not in cols_fijas]
-    plan_cols  = [c for c in cols_meses if "Plan" in c]
-    real_cols  = [c for c in cols_meses if "Real" in c or "Real" in c.replace("(","")]
+    # Detectar columnas de meses dinámicamente
+    cols_fijas = ["Proceso_Interno","Línea","Subcomponente","Plan Campaña"]
+    plan_cols  = [c for c in df.columns if c not in cols_fijas and "Plan" in c]
+    real_cols  = [c for c in df.columns if c not in cols_fijas and ("Real" in c or "real" in c.lower())]
 
     # Limpiar números
-    for c in cols_meses + (["Plan Campaña"] if "Plan Campaña" in df.columns else []):
+    for c in plan_cols + real_cols + (["Plan Campaña"] if "Plan Campaña" in df.columns else []):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    # Emparejar Plan con Real por mes (por posición)
-    meses    = []
-    plan_tot = []
-    real_tot = []
-    for pc, rc in zip(plan_cols, real_cols):
-        # Extraer nombre del mes del plan
-        mes = pc.split("(")[0].strip()
-        meses.append(mes)
-        plan_tot.append(int(df[pc].sum()))
-        real_tot.append(int(df[rc].sum()))
+    # Opciones filtros — no hay Semana/Mes en esta estructura
+    mes_map    = {4:"Abril",5:"Mayo",6:"Junio",7:"Julio",8:"Agosto",9:"Septiembre",10:"Octubre",11:"Noviembre",12:"Diciembre"}
+    if "Semana" in df.columns:
+        df["Semana"] = pd.to_numeric(df["Semana"], errors="coerce").fillna(0).astype(int)
+    if "Mes" in df.columns:
+        df["Mes"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
+    sem_opts = [{"label":f"Sem {s}","value":s} for s in sorted(df["Semana"].unique()) if s > 0] if "Semana" in df.columns else []
+    mes_opts = [{"label":mes_map.get(m,str(m)),"value":m} for m in sorted(df["Mes"].unique()) if m > 0] if "Mes" in df.columns else []
+    linea_opts = [{"label":l,"value":l} for l in sorted(df["Línea"].dropna().unique()) if l]
+    sub_opts   = [{"label":s,"value":s} for s in sorted(df["Subcomponente"].dropna().unique()) if s]
 
-    pct_meses = [round(r/p*100,1) if p>0 else 0 for r,p in zip(real_tot, plan_tot)]
+    # Aplicar filtros
+    df_fil = df.copy()
+    if semanas and "Semana" in df_fil.columns: df_fil = df_fil[df_fil["Semana"].isin(semanas)]
+    if mes_sel and "Mes" in df_fil.columns:    df_fil = df_fil[df_fil["Mes"] == int(mes_sel)]
+    if lineas:                                  df_fil = df_fil[df_fil["Línea"].isin(lineas)]
+    if subs:                                    df_fil = df_fil[df_fil["Subcomponente"].isin(subs)]
 
-    gaps     = [p - r for p,r in zip(plan_tot, real_tot)]
-    gap_pcts = [round((p-r)/p*100,1) if p>0 else 0 for p,r in zip(plan_tot, real_tot)]
+    if df_fil.empty:
+        return [], dbc.Alert("Sin datos para este filtro.", color="info"), [], sem_opts, mes_opts, linea_opts, sub_opts
 
-    fig_bar = go.Figure()
-    fig_bar.add_trace(go.Bar(
-        name="Plan", x=meses, y=plan_tot,
+    # Totales del último mes disponible
+    plan_total = df_fil["Plan semana"].sum() if "Plan semana" in df_fil.columns else 0
+    real_total = df_fil["Real semana"].sum() if "Real semana" in df_fil.columns else 0
+    pct_total  = round(real_total / plan_total * 100, 1) if plan_total > 0 else 0
+    col_kpi    = "success" if pct_total >= 90 else "warning" if pct_total >= 70 else "danger"
+
+    # KPIs
+    ultimo_mes = plan_cols[-1].split("(")[0].strip() if plan_cols else ""
+    kpis = dbc.Row([
+        dbc.Col(make_kpi("% Cumplimiento", f"{pct_total}%", ultimo_mes, col_kpi), width=3),
+        dbc.Col(make_kpi("Plan",  fmt_num(plan_total),  "unidades", "info"),    width=3),
+        dbc.Col(make_kpi("Real",  fmt_num(real_total),  "unidades", "primary"), width=3),
+        dbc.Col(make_kpi("Línea", str(df_fil["Línea"].nunique()), "en filtro"), width=3),
+    ], className="g-2")
+
+    # ── Gráfico 1: Plan vs Real por mes ──────────────────────────────────────
+    df_mes_data = df.copy()
+    if lineas: df_mes_data = df_mes_data[df_mes_data["Línea"].isin(lineas)]
+    if subs:   df_mes_data = df_mes_data[df_mes_data["Subcomponente"].isin(subs)]
+    if "Mes" in df_mes_data.columns:
+        df_mes_data["Mes"] = pd.to_numeric(df_mes_data["Mes"], errors="coerce").fillna(0).astype(int)
+        grp_mes = df_mes_data.groupby("Mes", as_index=False).agg(
+            Plan=("Plan semana","sum"), Real=("Real semana","sum"))
+        grp_mes["Mes_label"] = grp_mes["Mes"].map(mes_map).fillna(grp_mes["Mes"].astype(str))
+        meses_labels = grp_mes["Mes_label"].tolist()
+        plan_tots    = grp_mes["Plan"].tolist()
+        real_tots    = grp_mes["Real"].tolist()
+    else:
+        meses_labels, plan_tots, real_tots = [], [], []
+    pcts_mes = [round(r/p*100,1) if p>0 else 0 for r,p in zip(real_tots, plan_tots)]
+    gaps     = [max(p-r,0) for p,r in zip(plan_tots, real_tots)]
+
+    fig_mes = go.Figure()
+    fig_mes.add_trace(go.Bar(
+        name="Plan", x=meses_labels, y=plan_tots,
         marker_color="#1F3864",
-        text=[f"{v:,.0f}" for v in plan_tot],
+        text=[f"{v:,.0f}" for v in plan_tots],
         textposition="inside", textfont=dict(size=10, color="white"),
     ))
-    fig_bar.add_trace(go.Bar(
-        name="Real", x=meses, y=real_tot,
+    fig_mes.add_trace(go.Bar(
+        name="Real", x=meses_labels, y=real_tots,
         marker_color="#2E75B6",
-        text=[f"{v:,.0f}<br>✅ {p}%" for v,p in zip(real_tot, pct_meses)],
+        text=[f"{v:,.0f} ({p}%)" for v,p in zip(real_tots,pcts_mes)],
         textposition="inside", textfont=dict(size=10, color="white"),
     ))
-    fig_bar.add_trace(go.Bar(
-        name="Gap", x=meses, y=gaps,
-        marker_color="#FF6B6B",
-        text=[f"▼ {v:,.0f}<br>({g}%)" for v,g in zip(gaps, gap_pcts)],
-        textposition="outside", textfont=dict(size=10, color="#c00000"),
-        base=real_tot,
-        opacity=0.7,
+    fig_mes.add_trace(go.Bar(
+        name="Gap", x=meses_labels, y=gaps,
+        marker_color="#FF6B6B", opacity=0.7,
+        base=real_tots,
+        text=[f"▼{v:,.0f}" for v in gaps],
+        textposition="outside", textfont=dict(size=9, color="#c00000"),
     ))
-    fig_bar.update_layout(
-        title=dict(text="Plan vs Real por Mes (con Gap)", font=dict(size=14, color="#1F3864")),
+    fig_mes.update_layout(
+        title=dict(text="Plan vs Real por Mes", font=dict(size=14, color="#1F3864")),
         barmode="overlay", plot_bgcolor="white", paper_bgcolor="white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(l=40,r=20,t=60,b=40), height=350,
+        margin=dict(l=40,r=20,t=70,b=40), height=340,
         yaxis=dict(tickformat=",.0f", gridcolor="#f0f0f0"),
     )
 
-    # ── Gráfico 2: Dona — avance vs Plan Campaña ─────────────────────────────
-    plan_camp  = int(df["Plan Campaña"].sum()) if "Plan Campaña" in df.columns else 0
-    real_total = int(df[real_cols].sum().sum())
-    pct_camp   = round(real_total / plan_camp * 100, 1) if plan_camp > 0 else 0
-    pendiente  = max(plan_camp - real_total, 0)
+    # ── Gráfico 2: Plan vs Real por Subcomponente ────────────────────────────
+    if "Plan semana" in df_fil.columns and "Real semana" in df_fil.columns:
+        agg_d = {"Plan":("Plan semana","sum"), "Real":("Real semana","sum")}
+        if "Planificado" in df_fil.columns:
+            agg_d["Planif"] = ("Planificado","max")
+        df_sub_grp = df_fil.groupby(["Línea","Subcomponente"], as_index=False).agg(**agg_d)
+        if "Planif" not in df_sub_grp.columns:
+            df_sub_grp["Planif"] = df_sub_grp["Plan"]
+    df_sub_grp["Label"] = df_sub_grp["Línea"] + " — " + df_sub_grp["Subcomponente"]
+    df_sub_grp = df_sub_grp.sort_values(["Línea","Plan"], ascending=[True,True])
+    df_sub_grp["Pct"] = (df_sub_grp["Real"]/df_sub_grp["Plan"]*100).round(1).fillna(0)
+    df_sub_grp["Gap"] = (df_sub_grp["Plan"] - df_sub_grp["Real"]).clip(lower=0)
 
+    fig_sub = go.Figure()
+    fig_sub.add_trace(go.Bar(
+        name="Planificado", y=df_sub_grp["Label"], x=df_sub_grp["Planif"],
+        orientation="h", marker_color="#D9E1F2", opacity=0.9,
+    ))
+    fig_sub.add_trace(go.Bar(
+        name="Plan semana", y=df_sub_grp["Label"], x=df_sub_grp["Plan"],
+        orientation="h", marker_color="#1F3864", opacity=0.7,
+    ))
+    fig_sub.add_trace(go.Bar(
+        name="Real semana", y=df_sub_grp["Label"], x=df_sub_grp["Real"],
+        orientation="h", marker_color="#2E75B6",
+        text=[f"{p}%" for p in df_sub_grp["Pct"]],
+        textposition="outside", textfont=dict(size=9),
+    ))
+    fig_sub.update_layout(
+        title=dict(text="Plan vs Real por Subcomponente (período)", font=dict(size=14, color="#1F3864")),
+        barmode="overlay", plot_bgcolor="white", paper_bgcolor="white",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=180,r=80,t=70,b=40),
+        height=max(300, len(df_sub_grp)*30 + 120),
+        xaxis=dict(tickformat=",.0f", gridcolor="#f0f0f0"),
+    )
+
+    # ── Gráfico 3: Dona % cumplimiento ────────────────────────────────────────
+    pendiente = max(plan_total - real_total, 0)
     fig_dona = go.Figure(go.Pie(
         values=[real_total, pendiente],
-        labels=["Avance", "Pendiente"],
+        labels=["Real","Pendiente"],
         hole=0.65,
-        marker_colors=["#2E75B6", "#E9EFF7"],
+        marker_colors=["#2E75B6","#E9EFF7"],
         textinfo="none",
-        hovertemplate="%{label}: %{value:,.0f}<extra></extra>",
     ))
     fig_dona.add_annotation(
-        text=f"<b>{pct_camp}%</b><br><span style='font-size:11px'>vs Campaña</span>",
+        text=f"<b>{pct_total}%</b><br><span style='font-size:11px'>Cumplimiento</span>",
         x=0.5, y=0.5, showarrow=False,
-        font=dict(size=18, color="#1F3864"),
-        align="center",
+        font=dict(size=18, color="#1F3864"), align="center",
     )
     fig_dona.update_layout(
-        title=dict(text="Avance vs Plan Campaña", font=dict(size=14, color="#1F3864")),
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.1, xanchor="center", x=0.5),
-        margin=dict(l=20,r=20,t=60,b=40), height=320,
-        paper_bgcolor="white",
+        title=dict(text="% Cumplimiento período", font=dict(size=14, color="#1F3864")),
+        showlegend=False, margin=dict(l=20,r=20,t=60,b=20),
+        height=300, paper_bgcolor="white",
     )
 
-    # ── Gráfico 3: Barras por Línea ───────────────────────────────────────────
-    if real_cols and plan_cols:
-        last_plan = plan_cols[-1] if plan_cols else None
-        last_real = real_cols[-1] if real_cols else None
-        df_linea = df.groupby("Líneas", as_index=False).agg(
-            Plan=(last_plan, "sum"),
-            Real=(last_real, "sum"),
-        )
-        df_linea = df_linea.sort_values("Plan", ascending=True)
-        df_linea["Pct"] = (df_linea["Real"]/df_linea["Plan"]*100).round(1).fillna(0)
+    graficos = html.Div([
+        dbc.Row([
+            dbc.Col(dcc.Graph(figure=fig_mes,  config={"displayModeBar":False}), width=8),
+            dbc.Col(dcc.Graph(figure=fig_dona, config={"displayModeBar":False}), width=4),
+        ], className="g-2 mb-3"),
+        dbc.Row([
+            dbc.Col(dcc.Graph(figure=fig_sub, config={"displayModeBar":False}), width=12),
+        ], className="g-2"),
+    ])
 
-        fig_lin = go.Figure()
-        fig_lin.add_trace(go.Bar(
-            name="Plan", y=df_linea["Líneas"], x=df_linea["Plan"],
-            orientation="h", marker_color="#70AD47",
-        ))
-        fig_lin.add_trace(go.Bar(
-            name="Real", y=df_linea["Líneas"], x=df_linea["Real"],
-            orientation="h", marker_color="#A9D18E",
-            text=[f"{p}%" for p in df_linea["Pct"]],
-            textposition="outside", textfont=dict(size=9),
-        ))
-        fig_lin.update_layout(
-            title=dict(text=f"Último mes — Plan vs Real por Línea", font=dict(size=14, color="#1F3864")),
-            barmode="overlay", plot_bgcolor="white", paper_bgcolor="white",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=100,r=60,t=60,b=40),
-            height=max(280, len(df_linea)*35 + 100),
-            xaxis=dict(tickformat=",.0f", gridcolor="#f0f0f0"),
-        )
-        grafico_linea = dcc.Graph(figure=fig_lin, config={"displayModeBar":False})
-    else:
-        grafico_linea = html.Div()
+    # ── Tabla ─────────────────────────────────────────────────────────────────
+    cols_show = ["Semana","Lunes","Viernes","O. Prod.","Máquina",
+                 "Sec","Código","Descripción","Planificado","Cap. diaria",
+                 "Plan semana","Real semana"]
+    cols_show = [c for c in cols_show if c in df_fil.columns]
+    num_c = ["Planificado","Cap. diaria","Plan semana","Real semana"]
+    dt_cols = [{"name":c,"id":c,**({"type":"numeric","format":{"specifier":",.0f"}} if c in num_c else {})} for c in cols_show]
 
-    graficos = dbc.Row([
-        dbc.Col(dcc.Graph(figure=fig_bar, config={"displayModeBar":False}), width=8),
-        dbc.Col(dcc.Graph(figure=fig_dona, config={"displayModeBar":False}), width=4),
-        dbc.Col(grafico_linea, width=12, className="mt-3"),
-    ], className="g-2")
-
-    # ── Tabla detalle ─────────────────────────────────────────────────────────
-    dt_cols = [
-        {"name":"Proceso",       "id":"Proceso_Interno"},
-        {"name":"Línea",         "id":"Líneas"},
-        {"name":"Subcomponente", "id":"Subcomponente"},
+    style_cond = [
+        {"if":{"filter_query":"{Plan semana} > 0 && {Real semana} >= {Plan semana}","column_id":"Real semana"},
+         "backgroundColor":"#c6efce","color":"#1a7a4a"},
+        {"if":{"filter_query":"{Plan semana} > 0 && {Real semana} < {Plan semana}","column_id":"Real semana"},
+         "backgroundColor":"#ffc7ce","color":"#A32D2D"},
     ]
-    for c in cols_meses:
-        dt_cols.append({"name":c,"id":c,"type":"numeric","format":{"specifier":",.0f"}})
-    if "Plan Campaña" in df.columns:
-        dt_cols.append({"name":"Plan Campaña","id":"Plan Campaña","type":"numeric","format":{"specifier":",.0f"}})
-
-    style_cond = []
-    for pc, rc in zip(plan_cols, real_cols):
-        style_cond += [
-            {"if":{"filter_query":f"{{{rc}}} >= {{{pc}}} && {{{pc}}} > 0","column_id":rc},
-             "backgroundColor":"#c6efce","color":"#1a7a4a"},
-            {"if":{"filter_query":f"{{{rc}}} < {{{pc}}} && {{{pc}}} > 0","column_id":rc},
-             "backgroundColor":"#ffc7ce","color":"#A32D2D"},
-        ]
 
     tabla = dash_table.DataTable(
         columns=dt_cols,
-        data=df.to_dict("records"),
-        sort_action="native",
+        data=df_fil[cols_show].to_dict("records"),
+        sort_action="native", page_size=25,
         style_table={"overflowX":"auto"},
         style_header={"backgroundColor":"#1F3864","color":"white","fontWeight":"500",
-                      "fontSize":"11px","border":"0.5px solid #dee2e6","textAlign":"center"},
-        style_cell={"fontSize":"11px","padding":"5px 8px",
+                      "fontSize":"10px","border":"0.5px solid #dee2e6","textAlign":"center"},
+        style_cell={"fontSize":"10px","padding":"4px 7px",
                     "border":"0.5px solid #dee2e6","textAlign":"center"},
         style_data_conditional=style_cond,
         style_cell_conditional=[
             {"if":{"column_id":"Subcomponente"},"textAlign":"left"},
-            {"if":{"column_id":"Líneas"},        "textAlign":"left"},
+            {"if":{"column_id":"Línea"},"textAlign":"left"},
         ],
-        page_size=25,
     )
 
-    return graficos, tabla, proc_opts, linea_opts, sub_opts
+    return kpis, graficos, tabla, sem_opts, mes_opts, linea_opts, sub_opts
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

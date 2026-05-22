@@ -314,6 +314,8 @@ def get_ordenes_activas_en_dia(db_path: str, fecha: date) -> pd.DataFrame:
             p.Maquina, p.Proceso, p.Linea, p.Horas_Prog,
             p.Fecha_Inicio, p.Hora_Inicio, p.Fecha_Fin, p.Hora_Fin,
             p.Cap_Diaria, p.Planificado, p.Duracion_Horas,
+            p.Estado_OP,
+            p.Avance_SAP,
             COALESCE(acum.total_real, 0)               AS Acumulado_Real,
             COALESCE(dia.Cantidad_Real, 0)             AS Real_Dia,
             p.Planificado - COALESCE(acum.total_real, 0) AS Pendiente
