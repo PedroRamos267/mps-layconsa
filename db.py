@@ -314,8 +314,6 @@ def get_ordenes_activas_en_dia(db_path: str, fecha: date) -> pd.DataFrame:
             p.Maquina, p.Proceso, p.Linea, p.Horas_Prog,
             p.Fecha_Inicio, p.Hora_Inicio, p.Fecha_Fin, p.Hora_Fin,
             p.Cap_Diaria, p.Planificado, p.Duracion_Horas,
-            p.Estado_OP,
-            p.Avance_SAP,
             COALESCE(acum.total_real, 0)               AS Acumulado_Real,
             COALESCE(dia.Cantidad_Real, 0)             AS Real_Dia,
             p.Planificado - COALESCE(acum.total_real, 0) AS Pendiente
@@ -341,9 +339,14 @@ def get_ordenes_activas_en_dia(db_path: str, fecha: date) -> pd.DataFrame:
             )
           )
           AND (
-            -- Filtrar por mes: solo mostrar OPs del mes de la fecha seleccionada
+            -- Filtrar por mes del campo Mes (hoja Ordenes)
             CAST(COALESCE(p.Mes, 0) AS INTEGER) = 0
             OR CAST(COALESCE(p.Mes, 0) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
+            OR (
+              -- OP que cruza meses: inicio en mes anterior, fin en mes actual
+              CAST(strftime('%m', p.Fecha_Inicio) AS INTEGER) != CAST(strftime('%m', :fecha) AS INTEGER)
+              AND CAST(strftime('%m', p.Fecha_Fin) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
+            )
           )
         ORDER BY p.Proceso, p.Maquina, p.Sec
     """
