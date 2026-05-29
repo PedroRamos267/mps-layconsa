@@ -325,27 +325,24 @@ def get_ordenes_activas_en_dia(db_path: str, fecha: date) -> pd.DataFrame:
         ) acum ON p.BELNR_ID = acum.BELNR_ID
         LEFT JOIN avance_real dia
             ON p.BELNR_ID = dia.BELNR_ID AND dia.Fecha = :fecha
-        WHERE p.Fecha_Inicio <= :fecha
-          AND (
-            p.Fecha_Fin >= :fecha
-            OR (
-              -- OP vencida pero no completada
-              p.Fecha_Fin < :fecha
-              AND COALESCE(acum.total_real, 0) < p.Planificado
+        WHERE (
+            -- Todas las ABIERTAS del mes (para poder registrar avance)
+            (
+              COALESCE(p.Estado_OP, 'ABIERTO') != 'CERRADO'
+              AND (
+                CAST(COALESCE(p.Mes, 0) AS INTEGER) = 0
+                OR CAST(COALESCE(p.Mes, 0) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
+                OR CAST(strftime('%m', p.Fecha_Fin)    AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
+                OR CAST(strftime('%m', p.Fecha_Inicio) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
+              )
             )
             OR (
-              -- OP CERRADA/COMPLETADA — mostrar siempre para historial
+              -- CERRADAS del mes para historial
               COALESCE(p.Estado_OP, 'ABIERTO') = 'CERRADO'
-            )
-          )
-          AND (
-            -- Filtrar por mes del campo Mes (hoja Ordenes)
-            CAST(COALESCE(p.Mes, 0) AS INTEGER) = 0
-            OR CAST(COALESCE(p.Mes, 0) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
-            OR (
-              -- OP que cruza meses: inicio en mes anterior, fin en mes actual
-              CAST(strftime('%m', p.Fecha_Inicio) AS INTEGER) != CAST(strftime('%m', :fecha) AS INTEGER)
-              AND CAST(strftime('%m', p.Fecha_Fin) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
+              AND (
+                CAST(COALESCE(p.Mes, 0) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
+                OR CAST(strftime('%m', p.Fecha_Inicio) AS INTEGER) = CAST(strftime('%m', :fecha) AS INTEGER)
+              )
             )
           )
         ORDER BY p.Proceso, p.Maquina, p.Sec

@@ -395,6 +395,36 @@ def exportar_excel(df: pd.DataFrame, salida: str):
     ws2.freeze_panes = "A3"
     ws2.auto_filter.ref = f"A2:{get_column_letter(len(cols2))}{len(df)+2}"
 
+    # ── Hoja Mantenimientos ───────────────────────────────────────────────────
+    try:
+        df_mant = pd.read_excel(EXCEL_PLAN, sheet_name="Mantenimientos")
+        df_mant.columns = df_mant.columns.str.strip()
+        if not df_mant.empty:
+            ws3 = wb.create_sheet(title="Mantenimientos")
+            mant_cols = ["Maquina","Fecha_Inicio","Fecha_Fin","Descripcion"]
+            mant_cols = [c for c in mant_cols if c in df_mant.columns]
+            # Header
+            for ci, cn in enumerate(mant_cols, 1):
+                cell = ws3.cell(1, ci, cn)
+                cell.font      = Font(bold=True, color="FFFFFF", size=9)
+                cell.fill      = PatternFill("solid", fgColor="1F3864")
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border    = brd
+            # Data
+            for fi, (_, mrow) in enumerate(df_mant[mant_cols].iterrows(), 2):
+                for ci, val in enumerate(mrow.values, 1):
+                    cell = ws3.cell(fi, ci, val)
+                    cell.font      = Font(size=9)
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.border    = brd
+            ws3.column_dimensions["A"].width = 12
+            ws3.column_dimensions["B"].width = 14
+            ws3.column_dimensions["C"].width = 14
+            ws3.column_dimensions["D"].width = 30
+            print(f"  → {len(df_mant)} mantenimientos agregados")
+    except Exception as e:
+        print(f"  ⚠️  Mantenimientos no incluidos: {e}")
+
     wb.save(salida)
     print(f"✅ Exportado: {salida} ({len(df)} órdenes)")
     print()
