@@ -108,110 +108,6 @@ def build_layout():
             ]),
 
             # ── PESTAÑA MRP ──────────────────────────────────────────────────
-            dbc.Tab(label="🔩 MRP – Requerimiento de Materiales", tab_id="tab-mrp", children=[
-                html.Div(className="mt-3", children=[
-                    dbc.Tabs([
-                        # Sub-pestaña: Resumen del día
-                        dbc.Tab(label="📊 Resumen del día", tab_id="mrp-dia", children=[
-                            html.Div(className="mt-3", children=[
-                                dbc.Row(id="mrp-kpi-row", className="mb-3 g-2"),
-                                dbc.Row([
-                                    dbc.Col([
-                                        dcc.Dropdown(id="mrp-fil-proceso", placeholder="Tipo de material",
-                                                     multi=True, style={"fontSize": "13px"}),
-                                    ], width=4),
-                                    dbc.Col([
-                                        dcc.Dropdown(id="mrp-fil-alerta",
-                                            options=[
-                                                {"label": "🔴 Falta stock", "value": "alerta"},
-                                                {"label": "✅ Cubierto",    "value": "ok"},
-                                            ],
-                                            placeholder="Filtrar por cobertura",
-                                            style={"fontSize": "13px"}),
-                                    ], width=4),
-                                    dbc.Col([
-                                        dbc.Button("📥 Exportar MRP Excel", id="btn-exportar-mrp",
-                                                   color="warning", size="sm", outline=True,
-                                                   className="float-end"),
-                                    ], width=4),
-                                ], className="mb-2 g-2"),
-                                html.Div(id="mrp-feedback", className="mb-2"),
-                                html.Div(id="mrp-tabla-container"),
-                            ]),
-                        ]),
-                        # Sub-pestaña: Proyección Comprados
-                        dbc.Tab(label="⚠️ Proyección – Comprados", tab_id="mrp-proy-comp", children=[
-                            html.Div(className="mt-3", children=[
-                                dbc.Row(id="proy-kpi-row", className="mb-3 g-2"),
-                                dbc.Row([
-                                    dbc.Col([
-                                        dcc.Dropdown(id="proy-fil-tipo",
-                                                     placeholder="Tipo de material",
-                                                     multi=True, style={"fontSize": "13px"}),
-                                    ], width=3),
-                                    dbc.Col([
-                                        dcc.Dropdown(id="proy-fil-semaforo",
-                                            options=[
-                                                {"label": "🔴 Quiebre < 7 días",   "value": "rojo"},
-                                                {"label": "🟡 Quiebre < 15 días",  "value": "amarillo"},
-                                                {"label": "✅ Cobertura > 30 días", "value": "verde"},
-                                            ],
-                                            placeholder="Filtrar por semáforo",
-                                            multi=True,
-                                            style={"fontSize": "13px"}),
-                                    ], width=4),
-                                    dbc.Col([
-                                        dbc.Button("📥 Exportar", id="btn-export-proy",
-                                                   color="warning", size="sm", outline=True,
-                                                   className="float-end me-2"),
-                                        dbc.Button("🔄 Recalcular", id="btn-recalc-proy",
-                                                   color="secondary", size="sm", outline=True,
-                                                   className="float-end me-2"),
-                                    ], width=5),
-                                ], className="mb-2 g-2"),
-                                html.Div(id="proy-feedback", className="mb-2"),
-                                html.Div(id="proy-tabla-container"),
-                            ]),
-                        ]),
-                        # Sub-pestaña: Proyección Semiterminados
-                        dbc.Tab(label="🔧 Proyección – Semiterminados", tab_id="mrp-proy-semi", children=[
-                            html.Div(className="mt-3", children=[
-                                dbc.Row(id="semi-kpi-row", className="mb-3 g-2"),
-                                dbc.Row([
-                                    dbc.Col([
-                                        dcc.Dropdown(id="semi-fil-tipo",
-                                                     placeholder="Tipo de material",
-                                                     multi=True, style={"fontSize": "13px"}),
-                                    ], width=3),
-                                    dbc.Col([
-                                        dcc.Dropdown(id="semi-fil-semaforo",
-                                            options=[
-                                                {"label": "🔴 Quiebre < 7 días",   "value": "rojo"},
-                                                {"label": "🟡 Quiebre < 15 días",  "value": "amarillo"},
-                                                {"label": "✅ Cobertura > 30 días", "value": "verde"},
-                                            ],
-                                            placeholder="Filtrar por semáforo",
-                                            multi=True,
-                                            style={"fontSize": "13px"}),
-                                    ], width=4),
-                                    dbc.Col([
-                                        dbc.Button("📥 Exportar", id="btn-export-semi",
-                                                   color="warning", size="sm", outline=True,
-                                                   className="float-end me-2"),
-                                        dbc.Button("🔄 Recalcular", id="btn-recalc-semi",
-                                                   color="secondary", size="sm", outline=True,
-                                                   className="float-end me-2"),
-                                    ], width=5),
-                                ], className="mb-2 g-2"),
-                                html.Div(id="semi-feedback", className="mb-2"),
-                                html.Div(id="semi-tabla-container"),
-                            ]),
-                        ]),
-                    ], id="mrp-subtabs", active_tab="mrp-dia"),
-                ]),
-            ]),
-
-            # ── PESTAÑA RESUMEN OPS ─────────────────────────────────────────────
             dbc.Tab(label="📋 Resumen OPs", tab_id="tab-resumen", children=[
                 html.Div(className="mt-3", children=[
                     dbc.Row([
@@ -356,11 +252,12 @@ def build_layout():
                         dbc.Tab(label="📊 Resumen Campaña", tab_id="cum-sub-campana", children=[
                             html.Div(className="mt-3", children=[
                                 dbc.Row([
+                                    dbc.Col([dcc.Dropdown(id="cumres-fil-proceso", placeholder="Proceso", multi=True, style={"fontSize":"13px"})], width=2),
                                     dbc.Col([dcc.Dropdown(id="cumres-fil-semana", placeholder="Semana", multi=True, style={"fontSize":"13px"})], width=2),
-                                    dbc.Col([dcc.Dropdown(id="cumres-fil-mes", placeholder="Mes", style={"fontSize":"13px"})], width=2),
+                                    dbc.Col([dcc.Dropdown(id="cumres-fil-mes", placeholder="Mes", style={"fontSize":"13px"})], width=1),
                                     dbc.Col([dcc.Dropdown(id="cumres-fil-linea", placeholder="Línea", multi=True, style={"fontSize":"13px"})], width=2),
                                     dbc.Col([dcc.Dropdown(id="cumres-fil-sub", placeholder="Subcomponente", multi=True, style={"fontSize":"13px"})], width=2),
-                                    dbc.Col([dbc.Button("🔄 Actualizar", id="btn-cumres-refresh", color="secondary", size="sm", outline=True, className="float-end")], width=4),
+                                    dbc.Col([dbc.Button("🔄 Actualizar", id="btn-cumres-refresh", color="secondary", size="sm", outline=True, className="float-end")], width=3),
                                 ], className="mb-3 g-2"),
                                 dbc.Row(id="cumres-kpi-row", className="mb-3 g-2"),
                                 html.Div(id="cumres-graficos", className="mb-4"),
@@ -2030,26 +1927,32 @@ def descargar_cumplimiento_semanal(n, semana_vals, procesos):
 # ── Callback: Resumen Campaña ejecutivo ──────────────────────────────────────
 
 @app.callback(
-    Output("cumres-kpi-row",    "children"),
-    Output("cumres-graficos",   "children"),
-    Output("cumres-tabla",      "children"),
-    Output("cumres-fil-semana", "options"),
-    Output("cumres-fil-mes",    "options"),
-    Output("cumres-fil-linea",  "options"),
-    Output("cumres-fil-sub",    "options"),
-    Input("btn-cumres-refresh", "n_clicks"),
-    Input("cum-subtabs",        "active_tab"),
-    Input("cumres-fil-semana",  "value"),
-    Input("cumres-fil-mes",     "value"),
-    Input("cumres-fil-linea",   "value"),
-    Input("cumres-fil-sub",     "value"),
+    Output("cumres-kpi-row",      "children"),
+    Output("cumres-graficos",     "children"),
+    Output("cumres-tabla",        "children"),
+    Output("cumres-fil-semana",   "options"),
+    Output("cumres-fil-mes",      "options"),
+    Output("cumres-fil-linea",    "options"),
+    Output("cumres-fil-sub",      "options"),
+    Output("cumres-fil-proceso",  "options"),
+    Input("btn-cumres-refresh",   "n_clicks"),
+    Input("cum-subtabs",          "active_tab"),
+    Input("cumres-fil-semana",    "value"),
+    Input("cumres-fil-mes",       "value"),
+    Input("cumres-fil-linea",     "value"),
+    Input("cumres-fil-sub",       "value"),
+    Input("cumres-fil-proceso",   "value"),
 )
-def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs):
+def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs, procesos):
     import plotly.graph_objects as go
 
     try:
         df = pd.read_excel(EXCEL_PLAN, sheet_name="Resumen_Campaña")
         df.columns = df.columns.str.strip()
+        df_piv_global = pd.read_excel(EXCEL_PLAN, sheet_name="Pivot_semi")
+        df_piv_global.columns = df_piv_global.columns.str.strip()
+        df_piv_global["Cantidad Requerida"] = pd.to_numeric(
+            df_piv_global["Cantidad Requerida"], errors="coerce").fillna(0)
     except Exception as e:
         empty = [[], dbc.Alert(f"No se encontró Resumen_Campaña: {e}", color="warning"), [], [], [], [], []]
         return empty
@@ -2069,20 +1972,24 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs):
         df["Semana"] = pd.to_numeric(df["Semana"], errors="coerce").fillna(0).astype(int)
     if "Mes" in df.columns:
         df["Mes"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
-    sem_opts = [{"label":f"Sem {s}","value":s} for s in sorted(df["Semana"].unique()) if s > 0] if "Semana" in df.columns else []
-    mes_opts = [{"label":mes_map.get(m,str(m)),"value":m} for m in sorted(df["Mes"].unique()) if m > 0] if "Mes" in df.columns else []
-    linea_opts = [{"label":l,"value":l} for l in sorted(df["Línea"].dropna().unique()) if l]
-    sub_opts   = [{"label":s,"value":s} for s in sorted(df["Subcomponente"].dropna().unique()) if s]
+    sem_opts  = [{"label":f"Sem {s}","value":s} for s in sorted(df["Semana"].unique()) if s > 0] if "Semana" in df.columns else []
+    mes_opts  = [{"label":mes_map.get(m,str(m)),"value":m} for m in sorted(df["Mes"].unique()) if m > 0] if "Mes" in df.columns else []
+    proc_opts = [{"label":p,"value":p} for p in sorted(df["Proceso_Interno"].dropna().unique()) if p] if "Proceso_Interno" in df.columns else []
+    df_lin_base = df[df["Proceso_Interno"].isin(procesos)] if procesos and "Proceso_Interno" in df.columns else df
+    linea_opts  = [{"label":l,"value":l} for l in sorted(df_lin_base["Línea"].dropna().unique()) if l]
+    df_sub_base = df_lin_base[df_lin_base["Línea"].isin(lineas)] if lineas else df_lin_base
+    sub_opts    = [{"label":s,"value":s} for s in sorted(df_sub_base["Subcomponente"].dropna().unique()) if s]
 
     # Aplicar filtros
     df_fil = df.copy()
-    if semanas and "Semana" in df_fil.columns: df_fil = df_fil[df_fil["Semana"].isin(semanas)]
-    if mes_sel and "Mes" in df_fil.columns:    df_fil = df_fil[df_fil["Mes"] == int(mes_sel)]
-    if lineas:                                  df_fil = df_fil[df_fil["Línea"].isin(lineas)]
-    if subs:                                    df_fil = df_fil[df_fil["Subcomponente"].isin(subs)]
+    if procesos and "Proceso_Interno" in df_fil.columns: df_fil = df_fil[df_fil["Proceso_Interno"].isin(procesos)]
+    if semanas and "Semana" in df_fil.columns:            df_fil = df_fil[df_fil["Semana"].isin(semanas)]
+    if mes_sel and "Mes" in df_fil.columns:               df_fil = df_fil[df_fil["Mes"] == int(mes_sel)]
+    if lineas:                                             df_fil = df_fil[df_fil["Línea"].isin(lineas)]
+    if subs:                                               df_fil = df_fil[df_fil["Subcomponente"].isin(subs)]
 
     if df_fil.empty:
-        return [], dbc.Alert("Sin datos para este filtro.", color="info"), [], sem_opts, mes_opts, linea_opts, sub_opts
+        return [], dbc.Alert("Sin datos para este filtro.", color="info"), [], sem_opts, mes_opts, linea_opts, sub_opts, proc_opts
 
     # Totales del último mes disponible
     plan_total = df_fil["Plan semana"].sum() if "Plan semana" in df_fil.columns else 0
@@ -2092,11 +1999,25 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs):
 
     # KPIs
     ultimo_mes = plan_cols[-1].split("(")[0].strip() if plan_cols else ""
+    # Plan campaña desde Pivot_semi (ya cargado)
+    try:
+        df_camp = df_piv_global.groupby(["Líneas","Subcomponente"], as_index=False).agg(
+            Plan_Camp=("Cantidad Requerida","sum"))
+        df_camp_fil = df_camp.copy()
+        if lineas: df_camp_fil = df_camp_fil[df_camp_fil["Líneas"].isin(lineas)]
+        if subs:   df_camp_fil = df_camp_fil[df_camp_fil["Subcomponente"].isin(subs)]
+        plan_camp_kpi   = df_camp_fil["Plan_Camp"].sum()
+        plan_camp_total = df_camp["Plan_Camp"].sum()
+    except Exception as e:
+        print(f"  Warning Plan Campaña: {e}")
+        plan_camp_kpi = plan_camp_total = 0
+
     kpis = dbc.Row([
-        dbc.Col(make_kpi("% Cumplimiento", f"{pct_total}%", ultimo_mes, col_kpi), width=3),
-        dbc.Col(make_kpi("Plan",  fmt_num(plan_total),  "unidades", "info"),    width=3),
-        dbc.Col(make_kpi("Real",  fmt_num(real_total),  "unidades", "primary"), width=3),
-        dbc.Col(make_kpi("Línea", str(df_fil["Línea"].nunique()), "en filtro"), width=3),
+        dbc.Col(make_kpi("% Cumplimiento", f"{pct_total}%", ultimo_mes, col_kpi), width=2),
+        dbc.Col(make_kpi("Plan período",  fmt_num(plan_total),  "unidades", "info"),    width=2),
+        dbc.Col(make_kpi("Real período",  fmt_num(real_total),  "unidades", "primary"), width=2),
+        dbc.Col(make_kpi("Líneas", str(df_fil["Línea"].nunique()), "en filtro", "secondary"), width=2),
+        dbc.Col(make_kpi("Plan Campaña", fmt_num(plan_camp_kpi), "semiterminados", "dark"), width=4),
     ], className="g-2")
 
     # ── Gráfico 1: Plan vs Real por mes ──────────────────────────────────────
@@ -2201,14 +2122,129 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs):
         height=300, paper_bgcolor="white",
     )
 
+    # ── Gráfico 4: Barras horizontales Plan Campaña vs Avance ────────────────
+    # Cruzar Pivot_semi con real de Resumen_Campaña por Línea/Subcomponente
+    try:
+        df_piv2 = df_piv_global.copy()
+        # Filter piv2 by active filters
+        df_piv2_fil = df_piv2.copy()
+        if lineas: df_piv2_fil = df_piv2_fil[df_piv2_fil["Líneas"].isin(lineas)]
+        if subs:   df_piv2_fil = df_piv2_fil[df_piv2_fil["Subcomponente"].isin(subs)]
+        grp_piv = ["Líneas","Subcomponente"]
+        if "Proceso_Interno" in df_piv2.columns:
+            grp_piv = ["Proceso_Interno"] + grp_piv
+        df_camp_sum = df_piv2_fil.groupby(grp_piv, as_index=False).agg(Plan_Camp=("Cantidad Requerida","sum"))
+
+        # Calcular real por Línea/Subcomponente — solo "Real semana"
+        if "Real semana" in df_fil.columns and "Línea" in df_fil.columns and "Subcomponente" in df_fil.columns:
+            df_real_grp = df_fil.groupby(["Línea","Subcomponente"], as_index=False)["Real semana"].sum()
+            df_real_grp = df_real_grp.rename(columns={"Real semana":"Real_Total","Línea":"Líneas"})
+            df_resumen = df_camp_sum.merge(df_real_grp, on=["Líneas","Subcomponente"], how="left")
+            df_resumen["Real_Total"] = df_resumen["Real_Total"].fillna(0)
+        else:
+            df_resumen = df_camp_sum.copy()
+            df_resumen["Real_Total"] = 0
+
+        df_resumen["Pct_Avance"] = (df_resumen["Real_Total"] / df_resumen["Plan_Camp"] * 100).round(1).fillna(0)
+        df_resumen["Label"] = df_resumen["Líneas"] + " — " + df_resumen["Subcomponente"]
+        df_resumen = df_resumen.sort_values("Plan_Camp", ascending=True)
+
+        fig_camp = go.Figure()
+        fig_camp.add_trace(go.Bar(
+            name="Plan Campaña", y=df_resumen["Label"], x=df_resumen["Plan_Camp"],
+            orientation="h", marker_color="#1F3864", opacity=0.5,
+        ))
+        fig_camp.add_trace(go.Bar(
+            name="Avance", y=df_resumen["Label"], x=df_resumen["Real_Total"],
+            orientation="h", marker_color="#70AD47",
+            text=[f"{p}%" for p in df_resumen["Pct_Avance"]],
+            textposition="outside", textfont=dict(size=9),
+        ))
+        fig_camp.update_layout(
+            title=dict(text="Avance vs Plan Campaña por Línea/Subcomponente", font=dict(size=13, color="#1F3864")),
+            barmode="overlay", plot_bgcolor="white", paper_bgcolor="white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=180, r=80, t=70, b=40),
+            height=max(300, len(df_resumen)*30 + 120),
+            xaxis=dict(tickformat=",.0f", gridcolor="#f0f0f0"),
+        )
+        grafico_camp = dcc.Graph(figure=fig_camp, config={"displayModeBar":False})
+
+        # Tabla resumen
+        col_proc = "Proceso_Interno" if "Proceso_Interno" in df_resumen.columns else None
+        dt_resumen_cols = []
+        if col_proc: dt_resumen_cols.append({"name":"Proceso","id":"Proceso_Interno"})
+        dt_resumen_cols += [
+            {"name":"Línea",         "id":"Líneas"},
+            {"name":"Subcomponente", "id":"Subcomponente"},
+            {"name":"Avance",        "id":"Real_Total",  "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"Plan Campaña",  "id":"Plan_Camp",   "type":"numeric","format":{"specifier":",.0f"}},
+            {"name":"% Avance",      "id":"Pct_Avance",  "type":"numeric","format":{"specifier":".1f"}},
+        ]
+        tabla_resumen = dash_table.DataTable(
+            columns=dt_resumen_cols,
+            data=df_resumen[[c["id"] for c in dt_resumen_cols if c["id"] in df_resumen.columns]].to_dict("records"),
+            sort_action="native",
+            style_table={"overflowX":"auto"},
+            style_header={"backgroundColor":"#1F3864","color":"white","fontWeight":"500","fontSize":"11px","border":"0.5px solid #dee2e6","textAlign":"center"},
+            style_cell={"fontSize":"11px","padding":"5px 8px","border":"0.5px solid #dee2e6","textAlign":"center"},
+            style_data_conditional=[
+                {"if":{"filter_query":"{Pct_Avance} >= 90"},"backgroundColor":"#c6efce","color":"#1a7a4a"},
+                {"if":{"filter_query":"{Pct_Avance} >= 70 && {Pct_Avance} < 90"},"backgroundColor":"#ffeb9c","color":"#854F0B"},
+                {"if":{"filter_query":"{Pct_Avance} < 70"},"backgroundColor":"#ffc7ce","color":"#A32D2D"},
+            ],
+            style_cell_conditional=[
+                {"if":{"column_id":"Subcomponente"},"textAlign":"left"},
+                {"if":{"column_id":"Líneas"},"textAlign":"left"},
+            ],
+            page_size=20,
+        )
+    except Exception as e:
+        print(f"  Warning resumen campaña: {e}")
+        grafico_camp  = html.Div()
+        tabla_resumen = html.Div()
+
+    # ── Gráfico torta: Avance acumulado vs Plan Campaña (sensible a filtros) ──
+    # Torta: Real período (filtrado) / Plan Campaña (filtrado)
+    real_camp_fil  = real_total  # ya calculado y filtrado
+    pend_camp_fil  = max(plan_camp_kpi - real_camp_fil, 0)
+    pct_camp_fil   = round(real_camp_fil / plan_camp_kpi * 100, 1) if plan_camp_kpi > 0 else 0
+
+    fig_torta = go.Figure(go.Pie(
+        values=[real_camp_fil, pend_camp_fil],
+        labels=["Avance", "Pendiente"],
+        hole=0.6,
+        marker_colors=["#70AD47", "#E2EFDA"],
+        textinfo="none",
+        hovertemplate="%{label}: %{value:,.0f}<extra></extra>",
+    ))
+    fig_torta.add_annotation(
+        text=f"<b>{pct_camp_fil}%</b><br><span style='font-size:11px'>vs Campaña</span>",
+        x=0.5, y=0.5, showarrow=False,
+        font=dict(size=18, color="#375623"), align="center",
+    )
+    fig_torta.update_layout(
+        title=dict(text="Avance vs Plan Campaña", font=dict(size=14, color="#1F3864")),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5, font=dict(size=9)),
+        margin=dict(l=20,r=20,t=60,b=40), height=300, paper_bgcolor="white",
+    )
+
     graficos = html.Div([
         dbc.Row([
-            dbc.Col(dcc.Graph(figure=fig_mes,  config={"displayModeBar":False}), width=8),
-            dbc.Col(dcc.Graph(figure=fig_dona, config={"displayModeBar":False}), width=4),
+            dbc.Col(dcc.Graph(figure=fig_mes,   config={"displayModeBar":False}), width=6),
+            dbc.Col(dcc.Graph(figure=fig_dona,  config={"displayModeBar":False}), width=3),
+            dbc.Col(dcc.Graph(figure=fig_torta, config={"displayModeBar":False}), width=3),
         ], className="g-2 mb-3"),
         dbc.Row([
             dbc.Col(dcc.Graph(figure=fig_sub, config={"displayModeBar":False}), width=12),
-        ], className="g-2"),
+        ], className="g-2 mb-3"),
+        dbc.Row([
+            dbc.Col(grafico_camp, width=12),
+        ], className="g-2 mb-3"),
+        html.H6("Resumen por Línea / Subcomponente vs Plan Campaña",
+                className="mt-2 mb-2", style={"color":"#1F3864","fontWeight":"600"}),
+        tabla_resumen,
     ])
 
     # ── Tabla ─────────────────────────────────────────────────────────────────
@@ -2242,7 +2278,7 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs):
         ],
     )
 
-    return kpis, graficos, tabla, sem_opts, mes_opts, linea_opts, sub_opts
+    return kpis, graficos, tabla, sem_opts, mes_opts, linea_opts, sub_opts, proc_opts
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
