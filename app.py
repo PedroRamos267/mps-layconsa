@@ -1502,23 +1502,6 @@ def actualizar_gantt(_, proceso, mes_str, maquinas, lineas):
     con.close()
     df_ingr = get_todos_ingresos(DB_PATH)
 
-    # Cargar mantenimientos
-    try:
-        df_mant = pd.read_excel(EXCEL_PLAN, sheet_name="Mantenimientos")
-        df_mant.columns = df_mant.columns.str.strip()
-        df_mant["Fecha_Inicio"] = pd.to_datetime(df_mant["Fecha_Inicio"]).dt.date
-        df_mant["Fecha_Fin"]    = pd.to_datetime(df_mant["Fecha_Fin"]).dt.date
-    except Exception:
-        df_mant = pd.DataFrame(columns=["Maquina","Fecha_Inicio","Fecha_Fin","Descripcion"])
-
-    # Índice mantenimientos: {(maquina, fecha): descripcion}
-    mant_idx = {}
-    for _, mr in df_mant.iterrows():
-        d = mr["Fecha_Inicio"]
-        while d <= mr["Fecha_Fin"]:
-            mant_idx[(str(mr["Maquina"]).strip(), str(d))] = str(mr["Descripcion"])
-            d += timedelta(days=1)
-
     # Filtros
     if proceso:
         df_plan = df_plan[df_plan["Proceso"] == proceso]
@@ -1568,14 +1551,13 @@ def actualizar_gantt(_, proceso, mes_str, maquinas, lineas):
             key = dia.strftime("%d/%m")
             real_dia = ingr_dia.get((belnr, dia.strftime("%Y-%m-%d")), None)
 
-            # Mantenimiento — celda verde con descripción
-            mant_desc = mant_idx.get((str(row["Maquina"]).strip(), str(dia)))
-            if mant_desc:
-                fila[key] = f"🔧 {mant_desc}"
-                continue
-
             if dia < f_inicio:
-                fila[key] = ""
+                # Antes del inicio planificado — mostrar si hay ingreso real (azul claro)
+                if real_dia is not None:
+                    acum_real += real_dia
+                    fila[key] = "R:" + f"{int(real_dia):,}" + "\nA:" + f"{int(acum_real):,}"
+                else:
+                    fila[key] = ""
                 continue
 
             if dia > f_fin:
@@ -1608,23 +1590,18 @@ def actualizar_gantt(_, proceso, mes_str, maquinas, lineas):
 
         rows_data.append(fila)
 
-    # Colores semáforo por celda + mantenimientos
+    # Colores semáforo por celda
     COLOR_GANTT = []
-    for i, row_g in enumerate(rows_data):
-        maquina_g = row_g.get("Máquina","")
+    for i, row in enumerate(rows_data):
         for dia in dias:
             key = dia.strftime("%d/%m")
-            val = row_g.get(key, "")
-            # Mantenimiento: celda verde
-            if (maquina_g, str(dia)) in mant_idx:
-                COLOR_GANTT.append({
-                    "if": {"row_index": i, "column_id": key},
-                    "backgroundColor": "#90EE90", "color": "#1a5c1a",
-                })
-                continue
+            val = row.get(key, "")
             if not val or val == "":
                 continue
-            if "R:" in val:
+            if "R:" in val and "P:" not in val:
+                # Solo real sin plan = fuera de rango (azul claro)
+                color = "#BDD7EE"
+            elif "R:" in val:
                 lines = val.split("\n")
                 try:
                     pct_line = [l for l in lines if "%" in l]
@@ -2266,18 +2243,6 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs):
     )
 
     return kpis, graficos, tabla, sem_opts, mes_opts, linea_opts, sub_opts
-
-
-
-# ── Callback: Última actualización ───────────────────────────────────────────
-
-@app.callback(
-    Output("last-update-time", "children"),
-    Input("auto-refresh", "n_intervals"),
-)
-def actualizar_timestamp(_):
-    from datetime import datetime as _dt
-    return f"Actualizado: {_dt.now().strftime('%d/%m/%Y %H:%M')}"
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
