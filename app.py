@@ -1974,7 +1974,15 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs, procesos)
         df["Mes"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
     sem_opts  = [{"label":f"Sem {s}","value":s} for s in sorted(df["Semana"].unique()) if s > 0] if "Semana" in df.columns else []
     mes_opts  = [{"label":mes_map.get(m,str(m)),"value":m} for m in sorted(df["Mes"].unique()) if m > 0] if "Mes" in df.columns else []
-    proc_opts = [{"label":p,"value":p} for p in sorted(df["Proceso_Interno"].dropna().unique()) if p] if "Proceso_Interno" in df.columns else []
+    # Opciones de Proceso — desde Pivot_semi (tiene columna Proceso)
+    try:
+        _df_piv_p = pd.read_excel(EXCEL_PLAN, sheet_name="Pivot_semi")
+        _df_piv_p.columns = _df_piv_p.columns.str.strip()
+        _proc_col = "Proceso" if "Proceso" in _df_piv_p.columns else "Proceso_Interno" if "Proceso_Interno" in _df_piv_p.columns else None
+        proc_opts = [{"label":p,"value":p} for p in sorted(_df_piv_p[_proc_col].dropna().unique()) if p] if _proc_col else []
+    except Exception:
+        proc_opts = []
+    # Cascada: filtrar líneas según proceso seleccionado
     df_lin_base = df[df["Proceso_Interno"].isin(procesos)] if procesos and "Proceso_Interno" in df.columns else df
     linea_opts  = [{"label":l,"value":l} for l in sorted(df_lin_base["Línea"].dropna().unique()) if l]
     df_sub_base = df_lin_base[df_lin_base["Línea"].isin(lineas)] if lineas else df_lin_base
@@ -1982,7 +1990,7 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs, procesos)
 
     # Aplicar filtros
     df_fil = df.copy()
-    if procesos and "Proceso_Interno" in df_fil.columns: df_fil = df_fil[df_fil["Proceso_Interno"].isin(procesos)]
+    # proceso filter applied via piv2 below
     if semanas and "Semana" in df_fil.columns:            df_fil = df_fil[df_fil["Semana"].isin(semanas)]
     if mes_sel and "Mes" in df_fil.columns:               df_fil = df_fil[df_fil["Mes"] == int(mes_sel)]
     if lineas:                                             df_fil = df_fil[df_fil["Línea"].isin(lineas)]
@@ -2001,7 +2009,10 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs, procesos)
     ultimo_mes = plan_cols[-1].split("(")[0].strip() if plan_cols else ""
     # Plan campaña desde Pivot_semi (ya cargado)
     try:
-        df_camp = df_piv_global.groupby(["Líneas","Subcomponente"], as_index=False).agg(
+        _piv_g = df_piv_global.copy()
+        _pc2 = "Proceso" if "Proceso" in _piv_g.columns else "Proceso_Interno" if "Proceso_Interno" in _piv_g.columns else None
+        if procesos and _pc2: _piv_g = _piv_g[_piv_g[_pc2].isin(procesos)]
+        df_camp = _piv_g.groupby(["Líneas","Subcomponente"], as_index=False).agg(
             Plan_Camp=("Cantidad Requerida","sum"))
         df_camp_fil = df_camp.copy()
         if lineas: df_camp_fil = df_camp_fil[df_camp_fil["Líneas"].isin(lineas)]
@@ -2128,6 +2139,8 @@ def actualizar_resumen_campana(_, tab, semanas, mes_sel, lineas, subs, procesos)
         df_piv2 = df_piv_global.copy()
         # Filter piv2 by active filters
         df_piv2_fil = df_piv2.copy()
+        _pc = "Proceso" if "Proceso" in df_piv2_fil.columns else "Proceso_Interno" if "Proceso_Interno" in df_piv2_fil.columns else None
+        if procesos and _pc: df_piv2_fil = df_piv2_fil[df_piv2_fil[_pc].isin(procesos)]
         if lineas: df_piv2_fil = df_piv2_fil[df_piv2_fil["Líneas"].isin(lineas)]
         if subs:   df_piv2_fil = df_piv2_fil[df_piv2_fil["Subcomponente"].isin(subs)]
         grp_piv = ["Líneas","Subcomponente"]
